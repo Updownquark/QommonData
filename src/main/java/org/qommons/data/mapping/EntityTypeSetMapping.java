@@ -15,7 +15,6 @@ import java.util.SortedMap;
 import java.util.SortedSet;
 import java.util.TreeMap;
 import java.util.TreeSet;
-import java.util.function.Function;
 import java.util.stream.Collectors;
 
 import org.qommons.ClassMap;
@@ -198,10 +197,17 @@ public class EntityTypeSetMapping {
 		}
 	}
 
+	public interface EntityMappingScheme<T> {
+		T isEntity(Class<?> type);
+
+		String getEntityName(Class<?> type, T entity);
+
+		String getField(T entity, Method getter);
+	}
+
 	public static EntityTypeSetMapping parseTypeSet(EntityTypeSet genericTypes, Set<Class<?>> entityTypes,
-		Function<? super Class<?>, String> entityRecognizer, Function<? super Method, String> fieldRecognizer)
-			throws TypeSetMappingException {
-		Parsing parsing = new Parsing(genericTypes, entityRecognizer, fieldRecognizer);
+		EntityMappingScheme<?> entityMapping) throws TypeSetMappingException {
+		Parsing<?> parsing = new Parsing<>(genericTypes, entityMapping);
 		parsing.parse(entityTypes);
 		MappedTypeSetDiff diff = parsing.getDifferences();
 		if (diff != null)
@@ -209,22 +215,19 @@ public class EntityTypeSetMapping {
 		return parsing.getMappedTypeSet();
 	}
 
-	private static class Parsing {
+	private static class Parsing<T> {
 		private final EntityTypeSet theGenericTypes;
 		private final EntityTypeSetMapping theMappedTypeSet;
-		private final Function<? super Class<?>, String> theEntityRecognizer;
-		private final Function<? super Method, String> theFieldRecognizer;
+		private final EntityMappingScheme<T> theEntityMapping;
 		private final NavigableMap<String, EntityTypeMapping<?>> theMappedEntities;
 		private final NavigableMap<String, EnumTypeMapping<?>> theMappedEnums;
 		private final NavigableMap<String, MappedEntityDiff> theEntityDiffs;
 		private final NavigableMap<String, MappedEnumDiff> theEnumDiffs;
 		private final Map<String, NavigableSet<MappedFieldDiff>> theFieldDiffs;
 
-		Parsing(EntityTypeSet genericTypes, Function<? super Class<?>, String> entityRecognizer,
-			Function<? super Method, String> getterRecognizer) {
+		Parsing(EntityTypeSet genericTypes, EntityMappingScheme<T> entityMapping) {
 			theGenericTypes = genericTypes;
-			theEntityRecognizer = entityRecognizer;
-			theFieldRecognizer = getterRecognizer;
+			theEntityMapping = entityMapping;
 			theMappedEntities = new TreeMap<>();
 			theMappedEnums = new TreeMap<>();
 			theMappedTypeSet = new EntityTypeSetMapping(genericTypes, Collections.unmodifiableNavigableMap(theMappedEntities),
@@ -248,10 +251,10 @@ public class EntityTypeSetMapping {
 
 		void parse(Set<? extends Class<?>> entityTypes) {
 			for (Class<?> et : entityTypes) {
-				String typeName = theEntityRecognizer.apply(et);
-				if (typeName == null)
+				T type = theEntityMapping.isEntity(et);
+				if (type == null)
 					throw new IllegalArgumentException("Supplied entity type " + et.getName() + " is not recognized as an entity");
-				mapEntity(et, typeName);
+				mapEntity(et, type);
 			}
 			for (EnumType enumType : theGenericTypes.getEnumTypes()) {
 				if (!theMappedEnums.containsKey(enumType.getName()))
@@ -263,7 +266,8 @@ public class EntityTypeSetMapping {
 			}
 		}
 
-		private void mapEntity(Class<?> codeType, String entityName) {
+		private void mapEntity(Class<?> codeType, T entity) {
+			String entityName = theEntityMapping.getEntityName(codeType, entity);
 			if (!theMappedEntities.containsKey(entityName) && !theEntityDiffs.containsKey(entityName)) {
 				EntityType genericType = theGenericTypes.getEntityType(entityName);
 				if (genericType == null)
@@ -275,7 +279,7 @@ public class EntityTypeSetMapping {
 					theMappedEntities.put(genericType.getName(), mapping);
 					for (Method method : codeType.getMethods()) {
 						if (method.getParameterCount() == 0 && method.getReturnType() != void.class) {
-							String fieldName = theFieldRecognizer.apply(method);
+							String fieldName = theEntityMapping.getField(entity, method);
 							if (fieldName != null) {
 								EntityField<?> field = genericType.getField(fieldName);
 								if (field == null) {
@@ -319,9 +323,9 @@ public class EntityTypeSetMapping {
 				} else {
 					FieldType.SimpleType<?> simple = FieldType.SimpleType.get((Class<?>) type);
 					if (simple == null) {
-						String entityName = theEntityRecognizer.apply((Class<?>) type);
-						if (entityName != null)
-							mapEntity((Class<?>) type, entityName);
+						T entity = theEntityMapping.isEntity((Class<?>) type);
+						if (entity != null)
+							mapEntity((Class<?>) type, entity);
 						else {
 							return false;
 						}

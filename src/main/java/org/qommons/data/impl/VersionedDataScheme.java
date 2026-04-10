@@ -5,7 +5,6 @@ import java.io.IOException;
 import java.io.OutputStreamWriter;
 import java.io.Writer;
 import java.lang.reflect.InvocationTargetException;
-import java.lang.reflect.Method;
 import java.nio.charset.StandardCharsets;
 import java.text.ParseException;
 import java.time.Duration;
@@ -21,8 +20,6 @@ import java.util.Map;
 import java.util.NavigableMap;
 import java.util.Set;
 import java.util.TreeMap;
-import java.util.function.BiFunction;
-import java.util.function.Function;
 import java.util.function.Predicate;
 
 import org.qommons.ClassMap.TypeMatch;
@@ -37,6 +34,7 @@ import org.qommons.data.mapping.EntityFieldMapping;
 import org.qommons.data.mapping.EntityTypeMapping;
 import org.qommons.data.mapping.EntityTypeSetMapping;
 import org.qommons.data.mapping.MappedEntitySet;
+import org.qommons.data.mapping.MappedEntitySet.EntityMapping;
 import org.qommons.data.migration.Migration;
 import org.qommons.data.migration.MigrationException;
 import org.qommons.data.migration.MigrationPersistence;
@@ -55,7 +53,6 @@ import org.qommons.data.values.EntitySetPersistence;
 import org.qommons.data.values.GenericEntity;
 import org.qommons.data.values.GenericEntitySet;
 import org.qommons.ex.ExFunction;
-import org.qommons.fn.TriConsumer;
 import org.qommons.io.BetterFile;
 import org.qommons.io.CsvParser;
 import org.qommons.io.FileUtils;
@@ -101,9 +98,8 @@ public class VersionedDataScheme {
 			this.persistenceDir = persistenceDir;
 		}
 
-		public LoadedEntityData mapToCode(BiFunction<EntityTypeMapping<?>, GenericEntity, ?> entityCreator,
-			TriConsumer<Object, GenericEntity, MappedEntitySet> entityInitializer) throws IOException, TextParseException {
-			MappedEntitySet mappedEntities = MappedEntitySet.create(entityData, mappedEntityTypes, entityCreator, entityInitializer);
+		public LoadedEntityData mapToCode(EntityMapping entityMapping) throws IOException, TextParseException {
+			MappedEntitySet mappedEntities = MappedEntitySet.create(entityData, mappedEntityTypes, entityMapping);
 			return new LoadedEntityData(mappedEntityTypes, mappedEntities, persistenceDir);
 		}
 	}
@@ -233,10 +229,11 @@ public class VersionedDataScheme {
 
 		public void save(Iterable<?> entities) throws IOException, TextParseException {
 			theSaveStamp++; // Stop any unfinished save operations from running, since these are now obsolete
-			Predicate<EntityTypeMapping<?>> excludeGenerifyingEntities;
-			Predicate<EntityType> excludePersistingEntities;
+			Map<EntityType, Long> updatedEntities;
+			EntityExclusionByStamp excludeEntities;
 			if (theTypeStamps != null) {
 				MappedEntitySet entitySet = MappedEntitySet.create(entities, mappedEntityTypes);
+				Map<EntityTypeMapping<? extends Stamped>, Long> modifiedStamps = new HashMap<>();
 				Set<EntityType> excluded = new HashSet<>();
 				synchronized (theTypeStamps) {
 					for (Map.Entry<EntityTypeMapping<? extends Stamped>, Long> stampedType : theTypeStamps.entrySet()) {
@@ -244,34 +241,48 @@ public class VersionedDataScheme {
 						if (newStamp == stampedType.getValue().longValue())
 							excluded.add(stampedType.getKey().getGenericType());
 						else
-							stampedType.setValue(newStamp);
+							modifiedStamps.put(stampedType.getKey(), newStamp);
 					}
 				}
-				excludeGenerifyingEntities = type -> excluded.contains(type.getGenericType());
-				excludePersistingEntities = excluded::contains;
+				excludeEntities = new EntityExclusionByStamp(modifiedStamps, excluded);
 			} else {
-				excludeGenerifyingEntities = null;
-				excludePersistingEntities = null;
+				excludeEntities = null;
 			}
-			EntitySetGenerifier generifier = new EntitySetGenerifier(mappedEntityTypes).exclude(excludeGenerifyingEntities);
+			EntitySetGenerifier generifier = new EntitySetGenerifier(mappedEntityTypes).exclude(excludeEntities);
 			generifier.add(entities);
 			GenericEntitySet genericEntities = generifier.getEntities();
 			long stamp = ++theSaveStamp;
-			QommonsTimer.getCommonInstance().offload(() -> persist(genericEntities, stamp, excludePersistingEntities), PERSISTENCE_DELAY);
+			QommonsTimer.getCommonInstance().offload(() -> persist(genericEntities, stamp, excludeEntities), PERSISTENCE_DELAY);
+		}
+
+		private static class EntityExclusionByStamp implements Predicate<EntityTypeMapping<?>> {
+			final Map<EntityTypeMapping<? extends Stamped>, Long> modifiedStamps;
+			final Set<EntityType> excludedEntities;
+
+			EntityExclusionByStamp(Map<EntityTypeMapping<? extends Stamped>, Long> modifiedStamps, Set<EntityType> excludedEntities) {
+				this.modifiedStamps = modifiedStamps;
+				this.excludedEntities = excludedEntities;
+			}
+
+			@Override
+			public boolean test(EntityTypeMapping<?> type) {
+				return excludedEntities.contains(type.getGenericType());
+			}
 		}
 
 		private static long getTypeStamp(MappedEntitySet entityData, Class<? extends Stamped> type) {
 			return Stamped.compositeStamp(entityData.get(type, false));
 		}
 
-		private synchronized void persist(GenericEntitySet entities, long stamp, Predicate<EntityType> excludeEntities) {
+		private synchronized void persist(GenericEntitySet entities, long stamp, EntityExclusionByStamp excludeEntities) {
 			if (stamp != theSaveStamp) {
 				return;// Another save operation has happened, so this operation is obsolete
 			}
 			// Persist the data to memory
 			BetterFile memoryPersistence = new InMemoryFileSystem().at("/QommonsPersistence/");
 			try {
-				thePersistence.persist(entities, memoryPersistence, excludeEntities);
+				thePersistence.persist(entities, memoryPersistence,
+					excludeEntities == null ? null : excludeEntities.excludedEntities::contains);
 			} catch (IOException e) {
 				System.err.println("In-memory files should not throw IOExceptions!");
 				e.printStackTrace();
@@ -358,21 +369,16 @@ public class VersionedDataScheme {
 			}
 			try {
 				replaceFiles(written, ".NEW");
-				// Data replacement succeeded. Clean up and
+				// Data replacement succeeded. Clean up and update stuff.
+				if (excludeEntities != null) {
+					synchronized (theTypeStamps) {
+						theTypeStamps.putAll(excludeEntities.modifiedStamps);
+					}
+				}
 				theTypeFileHashes.putAll(entityDataChanges); // Update the file hashes after we've written the data
 				deleteFiles(written, ".OLD");
 			} catch (IOException | RuntimeException e) {
-				// Data replacement failed. Revert to the backed up data and make sure the next save() call writes everything it needs to.
-				if (theTypeStamps != null) {
-					synchronized (theTypeStamps) {
-						// The type stamps are modified in the synchronous save() call before this async call.
-						// It's not possible to back them up or delay modifying them
-						// because there may have been save() calls since the one that made this call.
-						// The best we can do is clear it out so all the data will be serialized with the next save call.
-						for (Map.Entry<?, Long> typedStamp : theTypeStamps.entrySet())
-							typedStamp.setValue(-1L);
-					}
-				}
+				// Data replacement failed. Revert to the backed up data.
 				replaceFilesForceAll(written, ".OLD");
 				deleteFiles(written, ".NEW");
 			}
@@ -501,8 +507,8 @@ public class VersionedDataScheme {
 		}
 	}
 
-	public static InitializedDataScheme init(Set<Class<?>> entityTypes, Function<? super Class<?>, String> entityRecognizer,
-		Function<? super Method, String> fieldRecognizer, BetterFile codeMigrations) throws IOException, TextParseException {
+	public static InitializedDataScheme init(Set<Class<?>> entityTypes, EntityTypeSetMapping.EntityMappingScheme<?> entityRecognizer,
+		BetterFile codeMigrations) throws IOException, TextParseException {
 		BetterSortedSet<MigrationSet> migrations = MigrationPersistence.parseMigrationSets(codeMigrations);
 		ModifiableEntityTypeSet migrationSchema = new ModifiableEntityTypeSet();
 		for (MigrationSet migrationSet : migrations) {
@@ -513,7 +519,7 @@ public class VersionedDataScheme {
 		}
 		EntityTypeSetMapping mapping;
 		try {
-			mapping = EntityTypeSetMapping.parseTypeSet(migrationSchema.unmodifiableView(), entityTypes, entityRecognizer, fieldRecognizer);
+			mapping = EntityTypeSetMapping.parseTypeSet(migrationSchema.unmodifiableView(), entityTypes, entityRecognizer);
 		} catch (EntityTypeSetMapping.TypeSetMappingException e) {
 			throw new MigrationException(
 				e.diff.print(new StringBuilder("The entity classes in code are incompatible with the documented schema:\n")).toString(),

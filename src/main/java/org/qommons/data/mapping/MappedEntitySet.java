@@ -9,7 +9,6 @@ import java.util.HashMap;
 import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.function.BiFunction;
 import java.util.function.BiPredicate;
 import java.util.function.Consumer;
 import java.util.function.ToIntFunction;
@@ -22,10 +21,15 @@ import org.qommons.data.types.EntityType;
 import org.qommons.data.types.FieldType;
 import org.qommons.data.values.GenericEntity;
 import org.qommons.data.values.GenericEntitySet;
-import org.qommons.fn.TriConsumer;
 import org.qommons.io.TextParseException;
 
 public class MappedEntitySet {
+	public interface EntityMapping {
+		<E> E createEntity(GenericEntity genericEntity, EntityTypeMapping<E> type, MappedEntitySet entitySet);
+
+		<E> void populateEntity(E realEntity, GenericEntity genericEntity, EntityTypeMapping<E> type, MappedEntitySet entitySet);
+	}
+
 	private static final ToIntFunction<Object> ARRAY_HASHER = (ToIntFunction<Object>) (ToIntFunction<?>) (ToIntFunction<Object[]>) Arrays::hashCode;
 	private static final BiPredicate<Object, Object> ARRAY_EQUALS = (BiPredicate<Object, Object>) (BiPredicate<?, ?>) (BiPredicate<Object[], Object[]>) Arrays::equals;
 
@@ -53,10 +57,10 @@ public class MappedEntitySet {
 		theEntities = entities;
 	}
 
-	public static MappedEntitySet create(GenericEntitySet data, EntityTypeSetMapping mappedTypes,
-		BiFunction<EntityTypeMapping<?>, GenericEntity, ?> entityCreator,
-		TriConsumer<Object, GenericEntity, MappedEntitySet> entityInitializer) throws IOException, TextParseException {
+	public static MappedEntitySet create(GenericEntitySet data, EntityTypeSetMapping mappedTypes, EntityMapping mapping)
+		throws IOException, TextParseException {
 		ClassMap<Map<Object, Object>> entities = new ClassMap<>();
+		MappedEntitySet mappedEntities = new MappedEntitySet(mappedTypes, entities);
 		for (EntityTypeMapping<?> type : mappedTypes.getEntityTypes().values()) {
 			if (type.getGenericType().getSuperType() != null)
 				continue;
@@ -68,10 +72,23 @@ public class MappedEntitySet {
 					entityType = mappedTypes.getEntityTypes().get(entity.getType().getName());
 				entities.computeIfAbsent(entityType.getRealType(), () -> createEntityMap(type.getGenericType())).put(
 					toHashId(entity.getId()), //
-					entityCreator.apply(entityType, entity));
+					mapping.createEntity(entity, entityType, mappedEntities));
 			}
 		}
-		return new MappedEntitySet(mappedTypes, entities);
+		for (EntityTypeMapping<?> type : mappedTypes.getEntityTypes().values()) {
+			if (type.getGenericType().getSuperType() != null)
+				continue;
+			for (GenericEntity entity : data.getEntities(type.getName())) {
+				EntityTypeMapping<?> entityType;
+				if (entity.getType() == type.getGenericType())
+					entityType = type;
+				else
+					entityType = mappedTypes.getEntityTypes().get(entity.getType().getName());
+				Object realEntity = entities.get(entityType.getRealType(), TypeMatch.EXACT).get(toHashId(entity.getId()));
+				mapping.populateEntity(realEntity, entity, (EntityTypeMapping<Object>) realEntity, mappedEntities);
+			}
+		}
+		return mappedEntities;
 	}
 
 	public static MappedEntitySet create(Iterable<?> entities, EntityTypeSetMapping mappedTypes) {
