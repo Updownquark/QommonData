@@ -1,16 +1,18 @@
 package org.qommons.data.values;
 
-import org.qommons.collect.BetterSortedSet;
+import java.io.IOException;
+
 import org.qommons.data.types.EntityTypeSet;
+import org.qommons.io.TextParseException;
 
 public interface GenericEntitySet {
 	EntityTypeSet getTypes();
 
-	BetterSortedSet<GenericEntity> getEntities(String typeName);
+	Iterable<GenericEntity> getEntities(String typeName) throws IllegalArgumentException, IOException, TextParseException;
 
-	GenericEntity createEntity(String typeName) throws DataSetModificationException;
+	GenericEntity getEntity(String typeName, Object... id) throws IllegalArgumentException, IOException, TextParseException;
 
-	GenericEntity createEntity(String typeName, Object... ids) throws DataSetModificationException;
+	GenericEntity createEntity(String typeName);
 
-	void deleteEntity(GenericEntity entity) throws DataSetModificationException;
+	GenericEntity createEntity(String typeName, Object... ids);
 }

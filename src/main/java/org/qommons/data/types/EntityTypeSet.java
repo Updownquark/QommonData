@@ -4,30 +4,18 @@ import org.qommons.StringUtils;
 import org.qommons.collect.BetterSortedList.SortedSearchFilter;
 import org.qommons.collect.BetterSortedSet;
 
-public class EntityTypeSet {
-	private final BetterSortedSet<EntityType> theEntityTypes;
-	private final BetterSortedSet<EnumType> theEnumTypes;
+public interface EntityTypeSet {
+	BetterSortedSet<? extends EntityType> getEntityTypes();
 
-	public EntityTypeSet(BetterSortedSet<EntityType> entityTypes, BetterSortedSet<EnumType> enumTypes) {
-		theEntityTypes = entityTypes;
-		theEnumTypes = enumTypes;
-	}
-
-	public BetterSortedSet<EntityType> getEntityTypes() {
-		return theEntityTypes;
-	}
-
-	public EntityType getEntityType(String name) {
-		return theEntityTypes.searchValue(t -> StringUtils.compareNumberTolerant(name, t.getName(), true, true),
+	default EntityType getEntityType(String name) {
+		return getEntityTypes().searchValue(t -> StringUtils.compareNumberTolerant(name, t.getName(), true, true),
 			SortedSearchFilter.OnlyMatch);
 	}
 
-	public BetterSortedSet<EnumType> getEnumTypes() {
-		return theEnumTypes;
-	}
+	BetterSortedSet<? extends EnumType> getEnumTypes();
 
-	public EnumType getEnumType(String name) {
-		return theEnumTypes.searchValue(e -> StringUtils.compareNumberTolerant(name, e.getName(), true, true),
+	default EnumType getEnumType(String name) {
+		return getEnumTypes().searchValue(e -> StringUtils.compareNumberTolerant(name, e.getName(), true, true),
 			SortedSearchFilter.OnlyMatch);
 	}
 }

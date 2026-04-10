@@ -1,11 +1,16 @@
 package org.qommons.data.migration;
 
+import java.io.IOException;
 import java.util.Map;
 import java.util.Set;
 
+import org.qommons.data.impl.MigratableDataSet;
+import org.qommons.data.types.modifiable.ModifiableEntityTypeSet;
+import org.qommons.data.values.DataSetModificationException;
 import org.qommons.data.values.GenericEntity;
 import org.qommons.data.values.GenericEntitySet;
 import org.qommons.io.FilePosition;
+import org.qommons.io.TextParseException;
 
 public abstract class CustomMigration implements Migration {
 	private final MigrationSet theMigrationSet;
@@ -33,12 +38,10 @@ public abstract class CustomMigration implements Migration {
 		return thePosition;
 	}
 
-	@Override
 	public Set<String> getAffectedEntities() {
 		return theAffectedEntities;
 	}
 
-	@Override
 	public Map<String, Set<String>> getRequiredEntitiesAndFields() {
 		return theRequiredFields;
 	}
@@ -47,7 +50,11 @@ public abstract class CustomMigration implements Migration {
 		return theMigrator;
 	}
 
-	public abstract void migrate(CustomMigrationComponent migrator, GenericEntitySet entitySet) throws MigrationException;
+	@Override
+	public void validate(ModifiableEntityTypeSet entities, Map<String, CustomMigrationComponent> migrators) throws MigrationException {
+		CustomMigrationComponent migrator = migrators.get(theMigrator.getName());
+		migrator.validate(entities.unmodifiableView(), thePosition);
+	}
 
 	public static class ForEachMigration extends CustomMigration {
 		public final String targetEntity;
@@ -64,9 +71,12 @@ public abstract class CustomMigration implements Migration {
 		}
 
 		@Override
-		public void migrate(CustomMigrationComponent migrator, GenericEntitySet entitySet) throws MigrationException {
-			for (GenericEntity entity : entitySet.getEntities(targetEntity))
-				((SingleEntityCustomMigrator) migrator).handle(entity, entitySet);
+		public void apply(MigratableDataSet dataSet, Map<String, CustomMigrationComponent> migrators)
+			throws IOException, TextParseException, MigrationException, DataSetModificationException {
+			GenericEntitySet view = dataSet.createView(getAffectedEntities(), getRequiredEntitiesAndFields());
+			SingleEntityCustomMigrator migrator = (SingleEntityCustomMigrator) migrators.get(getMigrator().getName());
+			for (GenericEntity entity : view.getEntities(targetEntity))
+				migrator.handle(entity, view);
 		}
 	}
 
@@ -82,8 +92,11 @@ public abstract class CustomMigration implements Migration {
 		}
 
 		@Override
-		public void migrate(CustomMigrationComponent migrator, GenericEntitySet entitySet) throws MigrationException {
-			((WholeSetCustomMigrator) migrator).migrate(entitySet);
+		public void apply(MigratableDataSet dataSet, Map<String, CustomMigrationComponent> migrators)
+			throws IOException, TextParseException, MigrationException, DataSetModificationException {
+			GenericEntitySet view = dataSet.createView(getAffectedEntities(), getRequiredEntitiesAndFields());
+			WholeSetCustomMigrator migrator = (WholeSetCustomMigrator) migrators.get(getMigrator().getName());
+			migrator.migrate(view);
 		}
 	}
 }

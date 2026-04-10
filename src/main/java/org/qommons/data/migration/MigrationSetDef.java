@@ -1,4 +1,4 @@
-package org.qommons.data.types;
+package org.qommons.data.migration;
 
 import java.time.Instant;
 import java.util.Comparator;

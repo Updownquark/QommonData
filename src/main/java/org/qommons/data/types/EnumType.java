@@ -5,25 +5,37 @@ import org.qommons.StringUtils;
 import org.qommons.collect.BetterSortedList.SortedSearchFilter;
 import org.qommons.collect.BetterSortedSet;
 
-public class EnumType implements Named, FieldType {
-	private final String theName;
-	private final BetterSortedSet<EnumValue> theValues;
-
-	public EnumType(String name, BetterSortedSet<EnumValue> values) {
-		theName = name;
-		theValues = values;
+public interface EnumType extends Named, EntityReferent<EnumValue> {
+	@Override
+	default int compare(EnumValue o1, EnumValue o2) {
+		if (o1 == null) {
+			if (o2 == null)
+				return 0;
+			else
+				return 1;
+		} else if (o2 == null)
+			return -1;
+		return StringUtils.compareNumberTolerant(o1.getName(), o2.getName(), true, true);
 	}
 
 	@Override
-	public String getName() {
-		return theName;
+	default boolean isInstance(Object value) {
+		return value instanceof EnumValue && ((EnumValue) value).getType() == this;
 	}
 
-	public BetterSortedSet<EnumValue> getValues() {
-		return theValues;
+	@Override
+	default EnumValue convert(Object value, FieldType<?> valueType) {
+		return (EnumValue) value;
 	}
 
-	public EnumValue getValue(String name) {
-		return theValues.searchValue(v -> StringUtils.compareNumberTolerant(name, v.getName(), true, true), SortedSearchFilter.OnlyMatch);
+	@Override
+	default boolean isAssignableFrom(FieldType<?> other) {
+		return other == this;
+	}
+
+	BetterSortedSet<? extends EnumValue> getValues();
+
+	default EnumValue getValue(String name) {
+		return getValues().searchValue(v -> StringUtils.compareNumberTolerant(name, v.getName(), true, true), SortedSearchFilter.OnlyMatch);
 	}
 }

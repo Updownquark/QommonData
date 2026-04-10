@@ -4,8 +4,6 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 
-import org.qommons.data.types.MigrationSetDef;
-
 public class MigrationSet extends MigrationSetDef {
 	private final Map<String, ConfigurableCustomMigrator<?>> theMigrators;
 	private final List<Migration> theMigrations;
@@ -23,5 +21,9 @@ public class MigrationSet extends MigrationSetDef {
 
 	public List<Migration> getMigrations() {
 		return theMigrations;
+	}
+
+	public MigrationSetDef toDef() {
+		return new MigrationSetDef(author, date, getDescription());
 	}
 }
