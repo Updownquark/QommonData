@@ -1,5 +1,7 @@
 package org.qommons.data.types;
 
+import java.util.Set;
+
 import org.qommons.Named;
 
 public interface EntityField<F> extends Named {
@@ -11,4 +13,12 @@ public interface EntityField<F> extends Named {
 	FieldType<F> getType();
 
 	boolean isId();
+
+	FieldMapping<F, ?, ?> getMapping();
+
+	FieldMapping<?, ?, ?> getMappingReference();
+
+	FieldMapping<?, ?, ?> getIndexReference();
+
+	Set<FieldMapping<?, ?, ?>> getAncillaryMappingReferences();
 }

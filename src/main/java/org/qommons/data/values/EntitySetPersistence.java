@@ -12,8 +12,10 @@ public interface EntitySetPersistence {
 
 	void populate(GenericEntitySet entitySet, BetterFile directory) throws IOException, TextParseException;
 
-	void persist(GenericEntitySet dataSet, BetterFile destDataDir, Predicate<? super EntityType> excludeEntities)
-		throws IOException, TextParseException;
+	void persistEntity(EntityType entityType, Iterable<? extends GenericEntity> entities, Predicate<? super GenericEntity> changedTest,
+		BetterFile destDataDir) throws IOException;
+
+	void persist(GenericEntitySet dataSet, BetterFile destDataDir) throws IOException;
 
 	String getPersistentEntityHash(BetterFile dataDir, EntityType type) throws IOException;
 

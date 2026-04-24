@@ -1,6 +1,7 @@
 package org.qommons.data.types.modifiable;
 
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
@@ -11,10 +12,13 @@ import org.qommons.collect.BetterCollections;
 import org.qommons.collect.BetterHashMultiMap;
 import org.qommons.collect.BetterHashSet;
 import org.qommons.collect.BetterMultiMap;
+import org.qommons.collect.BetterSet;
 import org.qommons.collect.BetterSortedList.SortedSearchFilter;
 import org.qommons.collect.BetterSortedSet;
+import org.qommons.collect.CollectionElement;
 import org.qommons.collect.DequeList;
 import org.qommons.collect.ListElement;
+import org.qommons.collect.MappedBetterSet;
 import org.qommons.collect.MappedBetterSortedSet;
 import org.qommons.collect.MappedSet;
 import org.qommons.data.migration.MigrationException;
@@ -29,43 +33,56 @@ import org.qommons.tree.BetterTreeMultiMap;
 import org.qommons.tree.BetterTreeSet;
 
 public class ModifiableEntityType implements EntityType {
-	private static final ModifiableEntityType[] ROOT_DESCENT = new ModifiableEntityType[0];
-
 	private final ModifiableEntityTypeSet theTypeSet;
-	private final ModifiableEntityType[] theDescent;
+	private final BetterSet<ModifiableEntityType> theSuperTypes;
 	private String theName;
 	private final BetterSortedSet<ModifiableEntityField<?>> theLocalFields;
 	private final DequeList<ModifiableEntityField<?>> theIdFields;
 	private final BetterSortedSet<ModifiableEntityField<?>> allFields;
+	private final Map<ModifiableEntityField<?>, Integer> theFieldIndexes;
 	private final Set<ModifiableEntityType> theSubTypes;
 	private final BetterMultiMap<ModifiableEntityType, ModifiableEntityField<GenericEntity>> theReferences;
 	private final Unmodifiable theUnmodifiable;
-	private int[][] theFieldIndexes;
 
-	ModifiableEntityType(ModifiableEntityTypeSet typeSet, ModifiableEntityType superType, String name) {
+	ModifiableEntityType(ModifiableEntityTypeSet typeSet, ModifiableEntityType[] superTypes, String name, FilePosition source)
+		throws MigrationException {
 		theTypeSet = typeSet;
-		theDescent = new ModifiableEntityType[superType.theDescent.length + 1];
-		System.arraycopy(superType.theDescent, 0, theDescent, 0, superType.theDescent.length);
-		theDescent[theDescent.length - 1] = superType;
+		if (superTypes.length == 1)
+			theSuperTypes = BetterSet.single(superTypes[0]);
+		else
+			theSuperTypes = BetterCollections.unmodifiableSet(BetterHashSet.<ModifiableEntityType> create().with(superTypes));
 		theName = name;
-		theIdFields = superType.getIdFields();
 		theLocalFields = BetterTreeSet.createTreeSet(Named.DISTINCT_NUMBER_TOLERANT);
 		allFields = BetterTreeSet.createTreeSet(Named.DISTINCT_NUMBER_TOLERANT);
-		allFields.addAll(superType.getFields());
+		ModifiableEntityType firstSuperRoot = null;
+		for (ModifiableEntityType sup : superTypes) {
+			if (firstSuperRoot == null)
+				firstSuperRoot = sup.getRootType();
+			else if (firstSuperRoot != sup.getRootType())
+				throw new MigrationException("All super types must extend the same root type: " + sup + " does not extend " + firstSuperRoot
+					+ " as " + superTypes[0] + " does", source);
+			for (ModifiableEntityField<?> field : sup.getFields()) {
+				CollectionElement<ModifiableEntityField<?>> el = allFields.getOrAdd(field, null, null, false, null, null);
+				if (el.get() != field)
+					throw new MigrationException("Super types '" + el.get().getOwner() + "' is incompatible with '" + sup
+						+ "': Conflicting fields named '" + field.getName() + "'", source);
+			}
+			sup.theSubTypes.add(this);
+		}
+		theFieldIndexes = new HashMap<>();
+		int f = 0;
+		for (ModifiableEntityField<?> field : allFields)
+			theFieldIndexes.put(field, f++);
+		theIdFields = firstSuperRoot.getIdFields();
 		theSubTypes = new HashSet<>();
 		theReferences = BetterHashMultiMap.create();
-		superType.theSubTypes.add(this);
 		theUnmodifiable = new Unmodifiable(this);
-		theFieldIndexes = new int[theDescent.length][];
-		theFieldIndexes[theDescent.length - 1] = new int[4];
-		for (int i = 0; i < theFieldIndexes.length; i++)
-			theFieldIndexes[i] = superType.theFieldIndexes[i].clone();
 	}
 
 	ModifiableEntityType(ModifiableEntityTypeSet typeSet, String name, Map<String, FieldType<?>> id, FilePosition source)
 		throws MigrationException {
 		theTypeSet = typeSet;
-		theDescent = ROOT_DESCENT;
+		theSuperTypes = BetterSet.empty();
 		theName = name;
 		theLocalFields = BetterTreeSet.createTreeSet(Named.DISTINCT_NUMBER_TOLERANT);
 		allFields = BetterCollections.unmodifiableSortedSet(theLocalFields);
@@ -74,7 +91,7 @@ public class ModifiableEntityType implements EntityType {
 		int f = 0;
 		for (Map.Entry<String, FieldType<?>> field : id.entrySet()) {
 			try {
-				idFieldArray[f++] = addField(field.getKey(), field.getValue(), source);
+				idFieldArray[f++] = addField(field.getKey(), field.getValue(), null, source);
 			} catch (MigrationException e) {
 				for (ModifiableEntityField<?> f2 : theLocalFields)
 					f2.delete();
@@ -111,13 +128,18 @@ public class ModifiableEntityType implements EntityType {
 	}
 
 	@Override
-	public ModifiableEntityType getSuperType() {
-		return theDescent.length == 0 ? null : theDescent[theDescent.length - 1];
+	public BetterSet<ModifiableEntityType> getSuperTypes() {
+		return BetterCollections.unmodifiableSet(theSuperTypes);
+	}
+
+	@Override
+	public ModifiableEntityType getRootType() {
+		return (ModifiableEntityType) EntityType.super.getRootType();
 	}
 
 	@Override
 	public BetterSortedSet<ModifiableEntityField<?>> getLocalFields() {
-		if (theDescent.length == 0)
+		if (theSuperTypes.isEmpty())
 			return allFields;
 		else
 			return BetterCollections.unmodifiableSortedSet(theLocalFields);
@@ -125,7 +147,7 @@ public class ModifiableEntityType implements EntityType {
 
 	@Override
 	public BetterSortedSet<ModifiableEntityField<?>> getFields() {
-		if (theDescent.length == 0)
+		if (theSuperTypes.isEmpty())
 			return allFields;
 		else
 			return BetterCollections.unmodifiableSortedSet(allFields);
@@ -143,21 +165,8 @@ public class ModifiableEntityType implements EntityType {
 
 	@Override
 	public int indexOf(EntityField<?> field) {
-		if (field.getOwner() == this) {
-			ModifiableEntityField<?> modField = (ModifiableEntityField<?>) field;
-			if (theFieldIndexes == null) {
-				// For root types, the field index is the same as the root index
-				return modField.getRootIndex();
-			} else
-				return theFieldIndexes[theDescent.length][modField.getRootIndex()];
-		} else if (theFieldIndexes == null || !(field instanceof ModifiableEntityField))
-			return -1;
-		ModifiableEntityField<?> modField = (ModifiableEntityField<?>) field;
-		int depth = modField.getOwner().theDescent.length;
-		if (depth < theDescent.length && theDescent[depth] == modField.getOwner())
-			return theFieldIndexes[depth][modField.getRootIndex()];
-		else
-			return -1;
+		Integer idx = theFieldIndexes.get(field);
+		return idx == null ? -1 : idx.intValue();
 	}
 
 	@Override
@@ -192,27 +201,44 @@ public class ModifiableEntityType implements EntityType {
 	}
 
 	private void checkNewField(String fieldName, FilePosition source, ModifiableEntityType fromSuperType) throws MigrationException {
-		if (theLocalFields.search(f -> StringUtils.compareNumberTolerant(fieldName, f.getName(), true, true),
-			SortedSearchFilter.OnlyMatch) != null) {
-			if (fromSuperType != null)
-				throw new MigrationException(
-					"Field name " + theName + "." + fieldName + " clashes with a field of sub-type '" + theName + "'", source);
-			else
-				throw new MigrationException("A " + theName + " field named '" + fieldName + "' already exists", source);
-		} else if (fromSuperType == null && theDescent.length > 0) {
-			ModifiableEntityField<?> inh = getSuperType().getField(fieldName);
-			if (inh != null)
-				throw new MigrationException("A field named '" + fieldName + "' is inherited from super type " + inh.getOwner(), source);
+		ModifiableEntityField<?> clash = allFields.searchValue(f -> StringUtils.compareNumberTolerant(fieldName, f.getName(), true, true),
+			SortedSearchFilter.OnlyMatch);
+		if (clash != null) {
+			if (clash.getOwner() == this) {
+				if (fromSuperType != null)
+					throw new MigrationException(
+						"Field " + theName + "." + fieldName + " clashes with a field of sub-type '" + theName + "'", source);
+				else
+					throw new MigrationException("A " + theName + " field named '" + fieldName + "' already exists", source);
+			} else {
+				if (fromSuperType != null)
+					throw new MigrationException("Field " + theName + "." + fieldName + " clashes with a field of sub-type '" + theName
+						+ "' which inherits " + clash, source);
+				else
+					throw new MigrationException(
+						"Field name " + theName + "." + fieldName + " clashes with a field of super-type '" + clash.getOwner(), source);
+			}
 		}
 		for (ModifiableEntityType subType : theSubTypes)
 			subType.checkNewField(fieldName, source, this);
 	}
 
-	public <F> ModifiableEntityField<F> addField(String name, FieldType<F> type, FilePosition source) throws MigrationException {
+	public <F> ModifiableEntityField<F> addField(String name, FieldType<F> type, FieldMappingPrecursor<?, ?> mapping, FilePosition source)
+		throws MigrationException {
 		checkNewField(name, source, null);
 		if (type == FieldType.SELF)
 			type = (FieldType<F>) this;
-		ModifiableEntityField<F> field = new ModifiableEntityField<>(this, name, type, false);
+		if (mapping != null) {
+			if (mapping.mappedReferenceField.getMappingReference() != null)
+				throw new MigrationException(
+					"Mapped reference field " + mapping.mappedReferenceField.getOwner() + "." + mapping.mappedReferenceField.getName()
+					+ " is already mapped to " + mapping.mappedReferenceField.getMappingReference().parentField,
+					source);
+			if (mapping.indexField != null && mapping.indexField.getIndexReference() != null)
+				throw new MigrationException("Mapped index field " + mapping.indexField.getOwner() + "." + mapping.indexField.getName()
+				+ " is already the index for " + mapping.indexField.getIndexReference().parentField, source);
+		}
+		ModifiableEntityField<F> field = new ModifiableEntityField<>(this, name, type, false, mapping, source);
 		addLocalField(field);
 		for (ModifiableEntityType subType : theSubTypes)
 			subType.addInheritedField(field);
@@ -220,61 +246,50 @@ public class ModifiableEntityType implements EntityType {
 			((ModifiableEntityType) type).theReferences.add(this, (ModifiableEntityField<GenericEntity>) field);
 		else if (type instanceof ModifiableEnumType)
 			((ModifiableEnumType) type).addReference((ModifiableEntityField<EnumValue>) field);
+
+		if (mapping != null) {
+			mapping.mappedReferenceField.setReference(field.getMapping());
+			if (mapping.keyField != null)
+				mapping.keyField.addAncillaryReference(field.getMapping());
+			if (mapping.indexField != null)
+				mapping.indexField.setIndexReference(field.getMapping());
+			if (mapping.sortByField != null)
+				mapping.sortByField.addAncillaryReference(field.getMapping());
+		}
 		return field;
 	}
 
 	private void regenFieldIndexes(ListElement<ModifiableEntityField<?>> start) {
+		if (start == null)
+			return;
 		int index = start.getElementsBefore();
-		for (; start != null; start = start.getAdjacent(true)) {
-			theFieldIndexes[start.get().getOwner().theDescent.length][start.get().getRootIndex()] = index++;
-		}
+		for (; start != null; start = start.getAdjacent(true))
+			theFieldIndexes.put(start.get(), index++);
 	}
 
 	private void addLocalField(ModifiableEntityField<?> field) {
 		ListElement<ModifiableEntityField<?>> added = theLocalFields.addElement(field, null, null, false);
-		int index = added.getElementsBefore();
-		field.setRootIndex(index);
-		for (ListElement<ModifiableEntityField<?>> next = added.getAdjacent(true); next != null; next = next.getAdjacent(true))
-			next.get().setRootIndex(++index);
-		if (theFieldIndexes != null) { // We're a sub-type
-			int[] localFieldIndexes = theFieldIndexes[theDescent.length];
-			if (localFieldIndexes.length < theLocalFields.size()) {
-				int[] newLFIs = new int[localFieldIndexes.length >> 1];
-				System.arraycopy(localFieldIndexes, 0, newLFIs, 0, index);
-				theFieldIndexes[theDescent.length] = newLFIs;
-			}
-			added = allFields.addElement(field, null, null, false);
+		if (theSubTypes.isEmpty()) { // We're a root type, so allFields is an unmodifiable view of theLocalFields
 			regenFieldIndexes(added);
-		}
+		} else
+			regenFieldIndexes(allFields.addElement(field, false));
 	}
 
 	private void removeLocalField(ModifiableEntityField<?> field) {
-		ListElement<ModifiableEntityField<?>> fieldEl = theLocalFields.getElement(field, true);
-		int index = field.getRootIndex();
-		for (ListElement<ModifiableEntityField<?>> next = fieldEl.getAdjacent(true); next != null; next = next.getAdjacent(true))
-			next.get().setRootIndex(index++);
-		theLocalFields.mutableElement(fieldEl.getElementId()).remove();
-		field.setRootIndex(-1);
-		if (theDescent.length > 0) {
-			fieldEl = allFields.getElement(field, true);
-			allFields.mutableElement(fieldEl.getElementId()).remove();
-			regenFieldIndexes(fieldEl.getAdjacent(true));
+		ListElement<ModifiableEntityField<?>> remove = theLocalFields.getElement(field, true);
+		theLocalFields.mutableElement(remove.getElementId()).remove();
+		if (theSubTypes.isEmpty()) { // We're a root type, so allFields is an unmodifiable view of theLocalFields
+			regenFieldIndexes(remove.getAdjacent(true));
+		} else {
+			remove = allFields.getElement(field, true);
+			allFields.mutableElement(remove.getElementId()).remove();
+			regenFieldIndexes(remove.getAdjacent(true));
 		}
 	}
 
 	void addInheritedField(ModifiableEntityField<?> field) {
 		ListElement<ModifiableEntityField<?>> added = allFields.addElement(field, null, null, false);
-		if (theFieldIndexes != null) { // We're a sub-type
-			ModifiableEntityType owner = field.getOwner();
-			int[] fieldIndexes = theFieldIndexes[owner.theDescent.length];
-			if (fieldIndexes.length < owner.theLocalFields.size()) {
-				int[] newLFIs = new int[fieldIndexes.length >> 1];
-				System.arraycopy(fieldIndexes, 0, newLFIs, 0, added.getElementsBefore());
-				theFieldIndexes[owner.theDescent.length] = newLFIs;
-			}
-			added = allFields.addElement(field, null, null, false);
-			regenFieldIndexes(added);
-		}
+		regenFieldIndexes(added);
 		for (ModifiableEntityType subType : theSubTypes)
 			subType.addInheritedField(field);
 	}
@@ -306,6 +321,16 @@ public class ModifiableEntityType implements EntityType {
 		removeLocalField(field);
 		for (ModifiableEntityType subType : theSubTypes)
 			subType.removeInheritedField(field);
+
+		if (field.getMapping() != null) {
+			((ModifiableEntityField<?>) field.getMapping().mappedReferenceField).setReference(null);
+			if (field.getMapping().keyField != null)
+				((ModifiableEntityField<?>) field.getMapping().keyField).removeAncillaryReference(field.getMapping());
+			if (field.getMapping().indexField != null)
+				((ModifiableEntityField<?>) field.getMapping().indexField).setIndexReference(null);
+			if (field.getMapping().sortByField != null)
+				((ModifiableEntityField<?>) field.getMapping().sortByField).removeAncillaryReference(field.getMapping());
+		}
 	}
 
 	@Override
@@ -316,6 +341,7 @@ public class ModifiableEntityType implements EntityType {
 	static class Unmodifiable implements EntityType {
 		private final ModifiableEntityType theSource;
 		private final EntityTypeSet theTypeSet;
+		private final BetterSet<EntityType> theSuperTypes;
 		private final BetterSortedSet<EntityField<?>> theLocalFields;
 		private final DequeList<? extends EntityField<?>> theIdFields;
 		private final BetterSortedSet<EntityField<?>> allFields;
@@ -327,22 +353,26 @@ public class ModifiableEntityType implements EntityType {
 			theTypeSet = source.getTypeSet().unmodifiableView();
 			theLocalFields = new MappedBetterSortedSet<>(source.theLocalFields, ModifiableEntityField::unmodifiableView, null,
 				Named.DISTINCT_NUMBER_TOLERANT);
-			if (source.getSuperType() != null)
-				theIdFields = source.getSuperType().unmodifiableView().getIdFields();
-			else if (source.theIdFields.size() == 1)
+			if (source.getSuperTypes().isEmpty()) {
+				theSuperTypes = BetterSet.empty();
 				theIdFields = DequeList.of(source.theIdFields.getFirst().unmodifiableView());
-			else {
-				EntityField<?>[] idFields = new EntityField[source.theIdFields.size()];
-				int f = 0;
-				for (ModifiableEntityField<?> field : source.theIdFields)
-					idFields[f++] = field.unmodifiableView();
-				theIdFields = DequeList.of(BetterHashSet.build().build(idFields));
-			}
-			if (source.getSuperType() == null)
 				allFields = theLocalFields;
-			else
+			} else {
+				theSuperTypes = new MappedBetterSet<>(source.theSuperTypes, ModifiableEntityType::unmodifiableView,
+					test -> theSource.theSuperTypes.contains(((Unmodifiable) test).theSource),
+					v -> v == null ? null : ((Unmodifiable) v).theSource);
+				if (source.theIdFields.size() == 1)
+					theIdFields = source.getSuperTypes().getFirst().unmodifiableView().getIdFields();
+				else {
+					EntityField<?>[] idFields = new EntityField[source.theIdFields.size()];
+					int f = 0;
+					for (ModifiableEntityField<?> field : source.theIdFields)
+						idFields[f++] = field.unmodifiableView();
+					theIdFields = DequeList.of(BetterHashSet.build().build(idFields));
+				}
 				allFields = new MappedBetterSortedSet<>(source.allFields, ModifiableEntityField::unmodifiableView, null,
 					Named.DISTINCT_NUMBER_TOLERANT);
+			}
 			theSubTypes = new MappedSet<>(source.theSubTypes, ModifiableEntityType::unmodifiableView,
 				test -> theSource.theSubTypes.contains(((Unmodifiable) test).theSource));
 			theReferrers = new MappedSet<>(source.theReferences.keySet(), ModifiableEntityType::unmodifiableView,
@@ -364,9 +394,8 @@ public class ModifiableEntityType implements EntityType {
 		}
 
 		@Override
-		public EntityType getSuperType() {
-			ModifiableEntityType superType = theSource.getSuperType();
-			return superType == null ? null : superType.unmodifiableView();
+		public BetterSet<EntityType> getSuperTypes() {
+			return theSuperTypes;
 		}
 
 		@Override

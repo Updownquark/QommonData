@@ -3,25 +3,25 @@ package org.qommons.data.mapping;
 import java.io.IOException;
 import java.lang.reflect.InvocationTargetException;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Collection;
-import java.util.HashMap;
+import java.util.Comparator;
 import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.function.BiPredicate;
 import java.util.function.Consumer;
-import java.util.function.ToIntFunction;
 
 import org.qommons.ClassMap;
 import org.qommons.ClassMap.TypeMatch;
-import org.qommons.collect.BetterHashMap;
+import org.qommons.IterableUtils;
+import org.qommons.collect.BetterSortedList.SortedSearchFilter;
+import org.qommons.collect.BetterSortedSet;
 import org.qommons.collect.MultiMap;
 import org.qommons.data.types.EntityType;
 import org.qommons.data.types.FieldType;
 import org.qommons.data.values.GenericEntity;
 import org.qommons.data.values.GenericEntitySet;
 import org.qommons.io.TextParseException;
+import org.qommons.tree.BetterTreeSet;
 
 public class MappedEntitySet {
 	public interface EntityMapping {
@@ -30,39 +30,24 @@ public class MappedEntitySet {
 		<E> void populateEntity(E realEntity, GenericEntity genericEntity, EntityTypeMapping<E> type, MappedEntitySet entitySet);
 	}
 
-	private static final ToIntFunction<Object> ARRAY_HASHER = (ToIntFunction<Object>) (ToIntFunction<?>) (ToIntFunction<Object[]>) Arrays::hashCode;
-	private static final BiPredicate<Object, Object> ARRAY_EQUALS = (BiPredicate<Object, Object>) (BiPredicate<?, ?>) (BiPredicate<Object[], Object[]>) Arrays::equals;
-
-	private static Map<Object, Object> createEntityMap(EntityType type) {
-		if (type.getIdFields().size() == 1)
-			return new HashMap<>();
-		else
-			return BetterHashMap.build()//
-				.withEquivalence(ARRAY_HASHER, ARRAY_EQUALS)//
-				.build();
-	}
-
-	private static Object toHashId(Object[] id) {
-		if (id.length == 1)
-			return id[0];
-		else
-			return id;
+	public interface EntityDifferenceAccepter {
+		<E> void differenceEncountered(EntityTypeMapping<E> type, E left, E right);
 	}
 
 	private final EntityTypeSetMapping theTypes;
-	private final ClassMap<Map<Object, Object>> theEntities;
+	private final ClassMap<BetterSortedSet<?>> theEntities;
 
-	private MappedEntitySet(EntityTypeSetMapping types, ClassMap<Map<Object, Object>> entities) {
+	private MappedEntitySet(EntityTypeSetMapping types, ClassMap<BetterSortedSet<?>> entities) {
 		theTypes = types;
 		theEntities = entities;
 	}
 
 	public static MappedEntitySet create(GenericEntitySet data, EntityTypeSetMapping mappedTypes, EntityMapping mapping)
 		throws IOException, TextParseException {
-		ClassMap<Map<Object, Object>> entities = new ClassMap<>();
+		ClassMap<BetterSortedSet<?>> entities = new ClassMap<>();
 		MappedEntitySet mappedEntities = new MappedEntitySet(mappedTypes, entities);
 		for (EntityTypeMapping<?> type : mappedTypes.getEntityTypes().values()) {
-			if (type.getGenericType().getSuperType() != null)
+			if (!type.getGenericType().getSuperTypes().isEmpty())
 				continue;
 			for (GenericEntity entity : data.getEntities(type.getName())) {
 				EntityTypeMapping<?> entityType;
@@ -70,13 +55,11 @@ public class MappedEntitySet {
 					entityType = type;
 				else
 					entityType = mappedTypes.getEntityTypes().get(entity.getType().getName());
-				entities.computeIfAbsent(entityType.getRealType(), () -> createEntityMap(type.getGenericType())).put(
-					toHashId(entity.getId()), //
-					mapping.createEntity(entity, entityType, mappedEntities));
+				createEntity(entityType, entity, entities, mappedEntities, mapping);
 			}
 		}
 		for (EntityTypeMapping<?> type : mappedTypes.getEntityTypes().values()) {
-			if (type.getGenericType().getSuperType() != null)
+			if (!type.getGenericType().getSuperTypes().isEmpty())
 				continue;
 			for (GenericEntity entity : data.getEntities(type.getName())) {
 				EntityTypeMapping<?> entityType;
@@ -84,11 +67,18 @@ public class MappedEntitySet {
 					entityType = type;
 				else
 					entityType = mappedTypes.getEntityTypes().get(entity.getType().getName());
-				Object realEntity = entities.get(entityType.getRealType(), TypeMatch.EXACT).get(toHashId(entity.getId()));
+				Object realEntity = entities.get(entityType.getRealType(), TypeMatch.EXACT).getEquivalentValue(entity, true);
 				mapping.populateEntity(realEntity, entity, (EntityTypeMapping<Object>) realEntity, mappedEntities);
 			}
 		}
 		return mappedEntities;
+	}
+
+	private static <E> void createEntity(EntityTypeMapping<E> entityType, GenericEntity entity, ClassMap<BetterSortedSet<?>> entities,
+		MappedEntitySet mappedEntities, EntityMapping mapping) {
+		BetterSortedSet<E> typeEntities = (BetterSortedSet<E>) entities.computeIfAbsent(entityType.getRealType(),
+			() -> BetterTreeSet.createTreeSet((Comparator<Object>) entityType.getSorting()));
+		typeEntities.add(mapping.createEntity(entity, entityType, mappedEntities));
 	}
 
 	public static MappedEntitySet create(Iterable<?> entities, EntityTypeSetMapping mappedTypes) {
@@ -107,6 +97,10 @@ public class MappedEntitySet {
 		return entitySet;
 	}
 
+	public EntityTypeSetMapping getTypes() {
+		return theTypes;
+	}
+
 	public <E> List<E> get(Class<E> type, boolean withSubTypes) {
 		List<E> values = new ArrayList<>();
 		forEach(type, withSubTypes, values::add);
@@ -122,7 +116,7 @@ public class MappedEntitySet {
 				//$FALL-THROUGH$
 			case EXACT:
 				if (value != null) {
-					for (E entity : (Collection<E>) value.values())
+					for (E entity : (Collection<E>) value)
 						forEach.accept(entity);
 				}
 				break;
@@ -133,26 +127,87 @@ public class MappedEntitySet {
 		});
 	}
 
+	public boolean hasAny(Class<?> type) {
+		boolean[] hasAny = new boolean[1];
+		theEntities.descend(type, (key, value, match) -> {
+			if (hasAny[0])
+				return false;
+			switch (match) {
+			case SUPER_TYPE:
+				break;
+			case EXACT:
+			case SUB_TYPE:
+				if (value != null && !value.isEmpty()) {
+					hasAny[0] = true;
+					return false;
+				}
+				break;
+			}
+			return true;
+		});
+		return hasAny[0];
+	}
+
+	public <E> E getMin(Class<E> type) {
+		EntityTypeMapping<E> entityType = (EntityTypeMapping<E>) theTypes.getEntityTypeHierarchy().get(type, TypeMatch.SUPER_TYPE);
+		Object[] min = new Object[1];
+		theEntities.descend(type, (key, value, match) -> {
+			switch (match) {
+			case SUPER_TYPE:
+				break;
+			case SUB_TYPE:
+			case EXACT:
+				if (value != null) {
+					E typeMin = (E) value.peekFirst();
+					if (typeMin == null) {// No values
+					} else if (min[0] == null || entityType.getSorting().compare(typeMin, (E) min[0]) < 0)
+						min[0] = typeMin;
+				}
+				break;
+			}
+			return true;
+		});
+		return (E) min[0];
+	}
+
+	public <E> E getMax(Class<E> type) {
+		EntityTypeMapping<E> entityType = (EntityTypeMapping<E>) theTypes.getEntityTypeHierarchy().get(type, TypeMatch.SUPER_TYPE);
+		Object[] max = new Object[1];
+		theEntities.descend(type, (key, value, match) -> {
+			switch (match) {
+			case SUPER_TYPE:
+				break;
+			case SUB_TYPE:
+			case EXACT:
+				if (value != null) {
+					E typeMax = (E) value.peekLast();
+					if (typeMax == null) {// No values
+					} else if (max[0] == null || entityType.getSorting().compare(typeMax, (E) max[0]) > 0)
+						max[0] = typeMax;
+				}
+				break;
+			}
+			return true;
+		});
+		return (E) max[0];
+	}
+
 	public <E> E get(Class<E> type, Object... id) {
-		Object hashId;
-		EntityTypeMapping<?> typeMapping = theTypes.getEntityTypeHierarchy().get(type, TypeMatch.SUB_TYPE);
+		EntityTypeMapping<E> typeMapping = (EntityTypeMapping<E>) theTypes.getEntityTypeHierarchy().get(type, TypeMatch.SUB_TYPE);
 		if (typeMapping == null)
 			throw new IllegalArgumentException("Unrecognized entity type: " + type);
 		else if (id.length != typeMapping.getGenericType().getIdFields().size())
 			throw new IllegalArgumentException("Entity type " + typeMapping.getName() + " (class " + type.getName() + ") has "
 				+ typeMapping.getGenericType().getIdFields().size() + " ID fields: " + typeMapping.getGenericType().getIdFields() + ", not "
 				+ id.length);
-		else if (id.length == 1)
-			hashId = id[0];
-		else
-			hashId = id;
+		Comparable<? super E> search = entity -> typeMapping.getSorting().compareId(id, entity);
 		Object[] result = new Object[1];
 		theEntities.descend(type, (key, value, match) -> {
 			switch (match) {
 			case EXACT:
 			case SUB_TYPE:
 				if (value != null) {
-					Object found = value.get(hashId);
+					Object found = ((BetterSortedSet<? extends E>) value).searchValue(search, SortedSearchFilter.OnlyMatch);
 					if (found != null) {
 						result[0] = found;
 						return false;
@@ -167,30 +222,57 @@ public class MappedEntitySet {
 		return (E) result[0];
 	}
 
-	private void addEntity(Object entity, EntityTypeMapping<?> superType)
-		throws IllegalAccessException, IllegalArgumentException, InvocationTargetException {
-		EntityTypeMapping<?> type = getType(entity, superType);
-		theEntities.compute(type.getRealType(), __ -> createEntityMap(superType.getGenericType())).putIfAbsent(getId(entity, type), entity);
+	public Collection<Object> getAll() {
+		return IterableUtils.map(theEntities.entries(), Map.Entry::getValue);
 	}
 
-	private Object getId(Object entity, EntityTypeMapping<?> type)
-		throws IllegalAccessException, IllegalArgumentException, InvocationTargetException {
-		if (type.getIdFields().size() == 1)
-			return type.getIdFields().getFirst().getGetter().invoke(entity);
-		Object[] id = new Object[type.getGenericType().getIdFields().size()];
-		int i = 0;
-		for (EntityFieldMapping<?, ?> field : type.getIdFields()) {
-			id[i++] = field.getGetter().invoke(entity);
+	public boolean diff(MappedEntitySet other, EntityDifferenceAccepter accepter) {
+		boolean same = true;
+		for (EntityTypeMapping<?> type : theTypes.getEntityTypes().values()) {
+			if (!diffType(other, type, accepter))
+				same = false;
 		}
-		return id;
+		return same;
 	}
 
-	private EntityTypeMapping<?> getType(Object entity, EntityTypeMapping<?> superType) {
-		EntityTypeMapping<?> type;
+	private <E> boolean diffType(MappedEntitySet other, EntityTypeMapping<E> type, EntityDifferenceAccepter accepter) {
+		BetterSortedSet<E> leftSet = (BetterSortedSet<E>) theEntities.get(type.getRealType(), TypeMatch.EXACT);
+		BetterSortedSet<E> rightSet = (BetterSortedSet<E>) other.theEntities.get(type.getRealType(), TypeMatch.EXACT);
+		boolean same = true;
+		if (leftSet != null) {
+			for (E leftEntity : leftSet) {
+				E rightEntity = rightSet == null ? null : rightSet.getEquivalentValue(leftEntity, true);
+				if (rightEntity != leftEntity) {
+					same = false;
+					accepter.differenceEncountered(type, leftEntity, rightEntity);
+				}
+			}
+		}
+		if (rightSet != null) {
+			for (E rightEnity : rightSet) {
+				if (leftSet != null && !leftSet.contains(rightEnity)) {
+					same = false;
+					accepter.differenceEncountered(type, null, rightEnity);
+				}
+			}
+		}
+		return same;
+	}
+
+	private <E> void addEntity(E entity, EntityTypeMapping<? super E> superType)
+		throws IllegalAccessException, IllegalArgumentException, InvocationTargetException {
+		EntityTypeMapping<E> type = getType(entity, superType);
+		BetterSortedSet<E> entities = (BetterSortedSet<E>) theEntities.compute(type.getRealType(),
+			__ -> BetterTreeSet.createTreeSet(type.getSorting()));
+		entities.add(entity);
+	}
+
+	private <E> EntityTypeMapping<E> getType(E entity, EntityTypeMapping<? super E> superType) {
+		EntityTypeMapping<E> type;
 		if (superType != null && (superType.getRealType() == entity.getClass() || superType.getGenericType().getSubTypes().isEmpty()))
-			type = superType;
+			type = (EntityTypeMapping<E>) superType;
 		else {
-			type = theTypes.getEntityTypeHierarchy().get(entity.getClass(), TypeMatch.SUPER_TYPE);
+			type = (EntityTypeMapping<E>) theTypes.getEntityTypeHierarchy().get(entity.getClass(), TypeMatch.SUPER_TYPE);
 			if (type == null)
 				throw new IllegalArgumentException(
 					"Type " + entity.getClass().getName() + " of entity " + entity + " is not a recognized entity type");
@@ -198,12 +280,12 @@ public class MappedEntitySet {
 		return type;
 	}
 
-	private void fillOut(Object entity, EntityTypeMapping<?> superType, Map<Object, Boolean> filledOut)
+	private <E> void fillOut(E entity, EntityTypeMapping<?> superType, Map<Object, Boolean> filledOut)
 		throws IllegalAccessException, IllegalArgumentException, InvocationTargetException {
 		if (filledOut.put(entity, Boolean.TRUE) != null)
 			return;
-		addEntity(entity, superType);
-		EntityTypeMapping<?> type = getType(entity, superType);
+		addEntity(entity, (EntityTypeMapping<? super E>) superType);
+		EntityTypeMapping<E> type = getType(entity, (EntityTypeMapping<? super E>) superType);
 		for (EntityFieldMapping<?, ?> field : type.getFields()) {
 			Object value = field.getGetter().invoke(entity);
 			if (value == null) {// Nothing to do

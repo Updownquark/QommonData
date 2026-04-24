@@ -14,7 +14,6 @@ import org.qommons.data.types.modifiable.ModifiableEntityType;
 import org.qommons.data.types.modifiable.ModifiableEntityTypeSet;
 import org.qommons.data.values.GenericEntity;
 import org.qommons.data.values.GenericEntitySet;
-import org.qommons.io.TextParseException;
 
 public class FilteredEntitySetView implements GenericEntitySet {
 	private final GenericEntitySet theSource;
@@ -55,19 +54,23 @@ public class FilteredEntitySetView implements GenericEntitySet {
 		EntityType type = theDataTypes.getEntityType(typeName);
 		if (type == null)
 			throw new IllegalArgumentException("No such entity type '" + typeName + "'");
+		return getView(type);
+	}
+
+	private EntityView getView(EntityType type) {
 		EntityView view = theEntityViews.get(type.getName());
-		while (view == null) {
-			EntityType superType = type.getSuperType();
-			if (superType == null)
-				return null;
-			type = superType;
-			view = theEntityViews.get(type.getName());
+		if (view != null)
+			return view;
+		for (EntityType sup : type.getSuperTypes()) {
+			view = getView(sup);
+			if (view != null)
+				return view;
 		}
-		return view;
+		return null;
 	}
 
 	@Override
-	public Iterable<GenericEntity> getEntities(String typeName) throws IllegalArgumentException, IOException, TextParseException {
+	public Iterable<GenericEntity> getEntities(String typeName) throws IllegalArgumentException, IOException {
 		EntityView view = getView(typeName);
 		if (view == null)
 			throw new IllegalArgumentException("Entities for type " + typeName + " are not provided here");
@@ -76,12 +79,17 @@ public class FilteredEntitySetView implements GenericEntitySet {
 	}
 
 	@Override
-	public GenericEntity getEntity(String typeName, Object... id) throws IllegalArgumentException, IOException, TextParseException {
+	public GenericEntity getEntity(String typeName, Object... id) throws IllegalArgumentException, IOException {
 		EntityView view = getView(typeName);
 		if (view == null)
 			throw new IllegalArgumentException("Entities for type " + typeName + " are not provided here");
 		GenericEntity source = theSource.getEntity(typeName, id);
 		return source == null ? null : view.apply(source);
+	}
+
+	@Override
+	public boolean isMember(GenericEntity entity) {
+		return entity instanceof FilteredEntityView && theSource.isMember(((FilteredEntityView) entity).getSource());
 	}
 
 	@Override
@@ -123,7 +131,7 @@ public class FilteredEntitySetView implements GenericEntitySet {
 		}
 	}
 
-	private static class FilteredEntityView implements GenericEntity {
+	static class FilteredEntityView implements GenericEntity {
 		private final GenericEntitySet theEntitySet;
 		private final GenericEntity theSource;
 		private final EntityView theView;
@@ -132,6 +140,10 @@ public class FilteredEntitySetView implements GenericEntitySet {
 			theEntitySet = entitySet;
 			theSource = source;
 			theView = view;
+		}
+
+		GenericEntity getSource() {
+			return theSource;
 		}
 
 		@Override
@@ -156,6 +168,20 @@ public class FilteredEntitySetView implements GenericEntitySet {
 		}
 
 		@Override
+		public String isEnabled(EntityField<?> field) {
+			if (!theView.isAffected)
+				return "Entities for type " + theView.theType + " cannot be affected here";
+			return theSource.isEnabled(field);
+		}
+
+		@Override
+		public String isAcceptable(EntityField<?> field, Object value) {
+			if (!theView.isAffected)
+				return "Entities for type " + theView.theType + " cannot be affected here";
+			return theSource.isAcceptable(field, value);
+		}
+
+		@Override
 		public GenericEntity set(EntityField<?> field, Object value) {
 			if (!theView.isAffected)
 				throw new UnsupportedOperationException("Entities for type " + theView.theType + " cannot be affected here");
@@ -164,19 +190,17 @@ public class FilteredEntitySetView implements GenericEntitySet {
 		}
 
 		@Override
+		public String canDelete() {
+			if (!theView.isAffected)
+				return "Entities for type " + theView.theType + " cannot be affected here";
+			return theSource.canDelete();
+		}
+
+		@Override
 		public void delete() {
 			if (!theView.isAffected)
 				throw new UnsupportedOperationException("Entities for type " + theView.theType + " cannot be affected here");
 			theSource.delete();
-		}
-
-		@Override
-		public GenericEntity immutableCopy() {
-			GenericEntity source = theSource.immutableCopy();
-			if (source == theSource)
-				return this;
-			else
-				return new FilteredEntityView(theEntitySet, source, theView);
 		}
 
 		@Override

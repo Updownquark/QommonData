@@ -4,6 +4,7 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -13,6 +14,8 @@ import java.util.function.Consumer;
 import java.util.function.Supplier;
 
 import org.qommons.Named;
+import org.qommons.collect.BetterCollection;
+import org.qommons.collect.BetterMap;
 import org.qommons.collect.BetterMultiMap;
 import org.qommons.collect.BetterSortedSet;
 import org.qommons.collect.MultiMap;
@@ -102,8 +105,8 @@ public class MigrationUtil {
 			else {
 				str.append("Entity Type '").append(leftType.getName()).append("':");
 				if (baseDiff) {
-					if (leftType.getSuperType() == null) {
-						if (rightType.getSuperType() == null) {
+					if (leftType.getSuperTypes().isEmpty()) {
+						if (rightType.getSuperTypes().isEmpty()) {
 							boolean idDiff = leftType.getIdFields().size() != rightType.getIdFields().size();
 							if (!idDiff) {
 								for (int i = 0; i < leftType.getIdFields().size(); i++) {
@@ -129,14 +132,23 @@ public class MigrationUtil {
 								str.append(" in ").append(rightName);
 							}
 						} else
-							str.append("\n\tRoot type in ").append(leftName).append(" but extends '")
-							.append(rightType.getSuperType().getName()).append("' in ").append(rightName);
-					} else if (rightType.getSuperType() == null)
-						str.append("\n\tRoot type in ").append(rightName).append(" but extends '").append(leftType.getSuperType().getName())
-						.append("' in ").append(leftName);
-					else if (!leftType.getSuperType().getName().equals(rightType.getSuperType().getName()))
-						str.append("Extends '").append(leftType.getSuperType().getName()).append("' in ").append(leftName).append(", but '")
-						.append(rightType.getSuperType().getName()).append("' in ").append(rightName);
+							str.append("\n\tRoot type in ").append(leftName).append(" but extends ").append(rightType.getSuperTypes())
+							.append(" in ").append(rightName);
+					} else if (rightType.getSuperTypes().isEmpty())
+						str.append("\n\tRoot type in ").append(rightName).append(" but extends ").append(leftType.getSuperTypes())
+						.append(" in ").append(leftName);
+					else {
+						Set<String> supers = new HashSet<>();
+						for (EntityType sup : leftType.getSuperTypes())
+							supers.add(sup.getName());
+						for (EntityType sup : rightType.getSuperTypes()) {
+							if (!supers.contains(sup.getName())) {
+								str.append("\n\tExtends ").append(leftType.getSuperTypes()).append(" in ").append(leftName)//
+								.append(", but ").append(rightType.getSuperTypes()).append(" in ").append(rightName);
+								break;
+							}
+						}
+					}
 				} else
 
 					for (EntityFieldDiff field : fields.values()) {
@@ -291,10 +303,10 @@ public class MigrationUtil {
 
 	public static EntityTypeDiff diffEntityType(EntityType leftType, EntityType rightType) {
 		boolean baseDiff = false;
-		if (leftType.getSuperType() == null) {
-			if (rightType.getSuperType() != null)
-				baseDiff = true;
-			else if (leftType.getIdFields().size() == rightType.getIdFields().size()) {
+		if (leftType.getSuperTypes().size() != rightType.getSuperTypes().size())
+			baseDiff = true;
+		else if (leftType.getSuperTypes().isEmpty()) {
+			if (leftType.getIdFields().size() == rightType.getIdFields().size()) {
 				for (int f = 0; f < leftType.getIdFields().size(); f++) {
 					if (!leftType.getIdFields().get(f).getName().equals(rightType.getIdFields().get(f).getName())) {
 						baseDiff = true;
@@ -303,11 +315,16 @@ public class MigrationUtil {
 				}
 			} else
 				baseDiff = true;
-		} else if (rightType.getSuperType() == null)
-			baseDiff = true;
-		else {
-			if (!leftType.getSuperType().getName().equals(rightType.getSuperType().getName()))
-				baseDiff = true;
+		} else {
+			Set<String> supers = new HashSet<>();
+			for (EntityType sup : leftType.getSuperTypes())
+				supers.add(sup.getName());
+			for (EntityType sup : rightType.getSuperTypes()) {
+				if (!supers.contains(sup.getName())) {
+					baseDiff = true;
+					break;
+				}
+			}
 		}
 		Set<EntityField<?>> rightFields = new LinkedHashSet<>(rightType.getFields());
 		Map<String, EntityFieldDiff> fieldDiffs = new LinkedHashMap<>();
@@ -472,6 +489,10 @@ public class MigrationUtil {
 			return SimpleType.DOUBLE;
 		case "String":
 			return SimpleType.STRING;
+		case "Instant":
+			return SimpleType.INSTANT;
+		case "Duration":
+			return SimpleType.DURATION;
 		}
 		if (text.equals(creatingEntity))
 			return FieldType.SELF;
@@ -513,9 +534,9 @@ public class MigrationUtil {
 
 	private static final char NO_TERMINAL = (char) 0;
 
-	private static <E, C extends Collection<E>> C parseCollection(CharSequence text, FieldType.CollectionType<E, C> fieldType,
+	private static <E, C extends BetterCollection<E>> C parseCollection(CharSequence text, FieldType.CollectionType<E, C> fieldType,
 		GenericEntitySet entities, Supplier<FilePosition> source) throws MigrationException {
-		C collection = fieldType.createEmptyCollection();
+		C collection = fieldType.createEmptyStructure();
 		StringBuilder valueStr = new StringBuilder();
 		for (int c = 0; c < text.length(); c++) {
 			c = MigrationUtil.parseComponentValue(text, c, fieldType.componentType, entities, source, ',', NO_TERMINAL, valueStr,
@@ -546,9 +567,9 @@ public class MigrationUtil {
 		return start;
 	}
 
-	private static <K, V, M extends Map<K, V>> M parseMap(CharSequence text, FieldType.MapType<K, V, M> fieldType,
+	private static <K, V, M extends BetterMap<K, V>> M parseMap(CharSequence text, FieldType.MapType<K, V, M> fieldType,
 		GenericEntitySet entities, Supplier<FilePosition> source) throws MigrationException {
-		M map = fieldType.createEmptyMap();
+		M map = fieldType.createEmptyStructure();
 		StringBuilder valueStr = new StringBuilder();
 		K[] key = (K[]) new Object[1]; // Obviously not safe, but we don't know anything about K so this will work and make our life easier
 		for (int c = 0; c < text.length(); c++) {
@@ -563,7 +584,7 @@ public class MigrationUtil {
 
 	private static <K, V, M extends BetterMultiMap<K, V>> M parseMultiMap(CharSequence text, FieldType.MultiMapType<K, V, M> fieldType,
 		GenericEntitySet entities, Supplier<FilePosition> source) throws MigrationException {
-		M map = fieldType.createEmptyMap();
+		M map = fieldType.createEmptyStructure();
 		StringBuilder valueStr = new StringBuilder();
 		Collection<V>[] valueColl = new Collection[1];
 		for (int c = 0; c < text.length(); c++) {
@@ -582,7 +603,7 @@ public class MigrationUtil {
 		if (value == null)
 			str.append("null");
 		else if (type instanceof FieldType.SimpleType)
-			str.append(value);
+			((FieldType.SimpleType<Object>) type).print(str, value);
 		else if (type instanceof EnumType)
 			str.append(value);
 		else if (type instanceof EntityType)
@@ -695,12 +716,19 @@ public class MigrationUtil {
 			throw new IllegalStateException("Field type " + type + " is not incrementable");
 	}
 
-	public static Object increment(FieldType<?> type, Object value) {
+	public static Object adjust(FieldType<?> type, Object value, boolean increment) {
 		if (type == FieldType.SimpleType.LONG) {
 			if (value == null)
-				return Long.valueOf(1L);
-			else
-				return Long.valueOf(((Long) value).longValue() + 1);
+				return Long.valueOf(increment ? 1L : -1L);
+			else {
+				long current = ((Long) value).longValue();
+				if (increment && current != Long.MAX_VALUE)
+					return Long.valueOf(current + 1);
+				else if (!increment && current != Long.MIN_VALUE)
+					return Long.valueOf(current - 1);
+				else
+					return null;
+			}
 		} else if (type == FieldType.SimpleType.STRING) {
 			if (value == null)
 				return "1";
@@ -711,24 +739,35 @@ public class MigrationUtil {
 				char ch = chars[c];
 				if (ch == '9')
 					chars[c] = '0';
-				else if (ch >= '0' && ch < '9') {
+				else if (increment && ch >= '0' && ch < '9') {
 					chars[c] = (char) (ch + 1);
 					return new String(chars, 1, str.length());
-				} else { // Prepended non-numeric text.
+				} else if (!increment && ch > '0' && ch <= '9') {
+					chars[c] = (char) (ch - 1);
+					return new String(chars, 1, str.length());
+				} else if (increment) { // Prepended non-numeric text.
 					// Move it back and add a digit
 					System.arraycopy(chars, 1, chars, 0, c - 1);
 					chars[c] = '1';
 					return new String(chars);
-				}
+				} else
+					return null;
 			}
 			// The entire text is '9's
 			chars[0] = '1';
 			return new String(chars);
 		} else if (type == FieldType.SimpleType.INT) {
 			if (value == null)
-				return Integer.valueOf(1);
-			else
-				return Integer.valueOf(((Integer) value).intValue() + 1);
+				return Integer.valueOf(increment ? 1 : -1);
+			else {
+				int current = ((Integer) value).intValue();
+				if (increment && current != Integer.MAX_VALUE)
+					return Integer.valueOf(current + 1);
+				else if (!increment && current != Integer.MIN_VALUE)
+					return Integer.valueOf(current - 1);
+				else
+					return null;
+			}
 		} else
 			throw new IllegalStateException("Field type " + type + " is not incrementable");
 	}

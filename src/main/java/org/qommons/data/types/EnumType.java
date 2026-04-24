@@ -1,5 +1,7 @@
 package org.qommons.data.types;
 
+import java.util.function.Function;
+
 import org.qommons.Named;
 import org.qommons.StringUtils;
 import org.qommons.collect.BetterSortedList.SortedSearchFilter;
@@ -31,6 +33,11 @@ public interface EnumType extends Named, EntityReferent<EnumValue> {
 	@Override
 	default boolean isAssignableFrom(FieldType<?> other) {
 		return other == this;
+	}
+
+	@Override
+	default <FT extends FieldType<?>> FT containsTypeLike(Function<? super FieldType<?>, FT> test) {
+		return test.apply(this);
 	}
 
 	BetterSortedSet<? extends EnumValue> getValues();

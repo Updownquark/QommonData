@@ -1,33 +1,44 @@
 package org.qommons.data.types;
 
-import java.util.ArrayList;
+import java.time.Duration;
+import java.time.Instant;
+import java.time.OffsetDateTime;
+import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeParseException;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.Iterator;
-import java.util.LinkedHashMap;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
-import java.util.Set;
-import java.util.SortedMap;
-import java.util.SortedSet;
-import java.util.TreeMap;
-import java.util.TreeSet;
+import java.util.function.Function;
 import java.util.function.Supplier;
 
 import org.qommons.StringUtils;
+import org.qommons.TimeUtils;
+import org.qommons.collect.BetterCollection;
+import org.qommons.collect.BetterHashMap;
 import org.qommons.collect.BetterHashMultiMap;
+import org.qommons.collect.BetterHashSet;
+import org.qommons.collect.BetterList;
+import org.qommons.collect.BetterMap;
 import org.qommons.collect.BetterMultiMap;
+import org.qommons.collect.BetterSet;
 import org.qommons.collect.BetterSortedList;
+import org.qommons.collect.BetterSortedMap;
 import org.qommons.collect.BetterSortedMultiMap;
+import org.qommons.collect.BetterSortedSet;
 import org.qommons.collect.DequeList;
 import org.qommons.collect.MultiEntryHandle;
+import org.qommons.collect.MultiMap;
 import org.qommons.data.migration.MigrationException;
 import org.qommons.io.FilePosition;
+import org.qommons.tree.BetterTreeList;
+import org.qommons.tree.BetterTreeMap;
 import org.qommons.tree.BetterTreeMultiMap;
+import org.qommons.tree.BetterTreeSet;
 import org.qommons.tree.SortedTreeList;
 
 public interface FieldType<F> extends Comparator<F> {
@@ -41,6 +52,8 @@ public interface FieldType<F> extends Comparator<F> {
 	boolean isAssignableFrom(FieldType<?> other);
 
 	F convert(Object value, FieldType<?> valueType);
+
+	<FT extends FieldType<?>> FT containsTypeLike(Function<? super FieldType<?>, FT> test);
 
 	/**
 	 * A placeholder type to indicate that an ID field for a newly created entity type should be a reference to another instance of the same
@@ -71,6 +84,11 @@ public interface FieldType<F> extends Comparator<F> {
 		public Void convert(Object value, FieldType<?> valueType) {
 			return null;
 		}
+
+		@Override
+		public <FT extends FieldType<?>> FT containsTypeLike(Function<? super FieldType<?>, FT> test) {
+			return test.apply(this);
+		}
 	}
 
 	public static class SimpleType<F> implements FieldType<F> {
@@ -96,6 +114,10 @@ public interface FieldType<F> extends Comparator<F> {
 		public static final SimpleType<Float> FLOAT = add(new SimpleType<>(Float.class), float.class);
 		public static final SimpleType<Double> DOUBLE = add(new SimpleType<>(Double.class), double.class);
 		public static final SimpleType<String> STRING = add(new SimpleType<>(String.class), null);
+		public static final SimpleType<Instant> INSTANT = add(new SimpleType<>(Instant.class), null);
+		public static final SimpleType<Duration> DURATION = add(new SimpleType<>(Duration.class), null);
+
+		private static final DateTimeFormatter INSTANT_FORMAT = DateTimeFormatter.ofPattern("yyyy/MM/dd HH:mm:ss[.nnnnnnnnn]");
 
 		public final Class<F> type;
 
@@ -169,6 +191,11 @@ public interface FieldType<F> extends Comparator<F> {
 			throw new IllegalStateException("Unrecognized conversion from " + this + " to " + valueType);
 		}
 
+		@Override
+		public <FT extends FieldType<?>> FT containsTypeLike(Function<? super FieldType<?>, FT> test) {
+			return test.apply(this);
+		}
+
 		public F parse(String text, Supplier<FilePosition> source) throws MigrationException {
 			if (this == BOOLEAN) {
 				switch (text) {
@@ -223,9 +250,32 @@ public interface FieldType<F> extends Comparator<F> {
 				} catch (NumberFormatException e) {
 					throw new MigrationException("Could not parse double from '" + text + "'", source.get(), e);
 				}
+			} else if (this == INSTANT) {
+				try {
+					return (F) OffsetDateTime.parse(text, INSTANT_FORMAT).toInstant();
+				} catch (DateTimeParseException e) {
+					throw new MigrationException("Could not parse instant from '" + text + "'", source.get(), e);
+				}
+			} else if (this == DURATION) {
+				double seconds;
+				try {
+					seconds = Double.parseDouble(text);
+				} catch (NumberFormatException e) {
+					throw new MigrationException("Could not parse double from '" + text + "'", source.get(), e);
+				}
+				return (F) TimeUtils.ofSeconds(seconds);
 			} else {
 				throw new IllegalStateException("Who even am I?");
 			}
+		}
+
+		public void print(StringBuilder str, F value) {
+			if (this == INSTANT) {
+				INSTANT_FORMAT.formatTo((Instant) value, str);
+			} else if (this == DURATION) {
+				str.append(TimeUtils.toSeconds((Duration) value));
+			} else
+				str.append(value);
 		}
 
 		@Override
@@ -256,9 +306,24 @@ public interface FieldType<F> extends Comparator<F> {
 		}
 
 		boolean rawTypesEqual(ParameterizedType<?> other);
+
+		@Override
+		default <FT extends FieldType<?>> FT containsTypeLike(Function<? super FieldType<?>, FT> test) {
+			FT me = test.apply(this);
+			if (me != null)
+				return me;
+			for (FieldType<?> param : getTypeParameters()) {
+				FT found = param.containsTypeLike(test);
+				if (found != null)
+					return found;
+			}
+			return null;
+		}
+
+		F createEmptyStructure();
 	}
 
-	public static class CollectionType<E, C extends Collection<E>> implements ParameterizedType<C> {
+	public static class CollectionType<E, C extends BetterCollection<E>> implements ParameterizedType<C> {
 		public final FieldType<E> componentType;
 		public final boolean isSorted;
 		public final boolean isDistinct;
@@ -286,14 +351,14 @@ public interface FieldType<F> extends Comparator<F> {
 		public boolean isInstance(Object value) {
 			if (isSorted) {
 				if (isDistinct) {
-					if (!(value instanceof SortedSet))
+					if (!(value instanceof BetterSortedSet))
 						return false;
 				} else if (!(value instanceof BetterSortedList))
 					return false;
 			} else if (isDistinct) {
-				if (!(value instanceof Set))
+				if (!(value instanceof BetterSet))
 					return false;
-			} else if (!(value instanceof List))
+			} else if (!(value instanceof BetterList))
 				return false;
 			for (Object v : (Collection<?>) value) {
 				if (!componentType.isInstance(v))
@@ -336,16 +401,21 @@ public interface FieldType<F> extends Comparator<F> {
 				return componentType.isAssignableFrom(ct.componentType);
 		}
 
-		public C createEmptyCollection() {
+		@Override
+		public C createEmptyStructure() {
+			return createEmptyCollection(componentType);
+		}
+
+		public C createEmptyCollection(Comparator<? super E> sorting) {
 			if (isSorted) {
 				if (isDistinct)
-					return (C) new TreeSet<>(componentType);
+					return (C) BetterTreeSet.createTreeSet(sorting);
 				else
-					return (C) SortedTreeList.createTreeList(componentType);
+					return (C) SortedTreeList.createTreeList(sorting);
 			} else if (isDistinct)
-				return (C) new LinkedHashSet<>();
+				return (C) BetterHashSet.create();
 			else
-				return (C) new ArrayList<>();
+				return (C) BetterTreeList.create();
 		}
 
 		@Override
@@ -353,16 +423,7 @@ public interface FieldType<F> extends Comparator<F> {
 			CollectionType<?, ?> ct = (CollectionType<?, ?>) valueType;
 			if (isSorted == ct.isSorted && isDistinct == ct.isDistinct && componentType.equals(ct.componentType))
 				return (C) value;
-			C newValue = createEmptyCollection();
-			if (isSorted) {
-				if (isDistinct)
-					newValue = (C) new TreeSet<>(componentType);
-				else
-					newValue = (C) SortedTreeList.createTreeList(componentType);
-			} else if (isDistinct)
-				newValue = (C) new LinkedHashSet<>();
-			else
-				newValue = (C) new ArrayList<>();
+			C newValue = createEmptyStructure();
 			for (Object v : (Collection<?>) value)
 				newValue.add(componentType.convert(v, ct.componentType));
 			return null;
@@ -397,7 +458,7 @@ public interface FieldType<F> extends Comparator<F> {
 		}
 	}
 
-	public static class MapType<K, V, M extends Map<K, V>> implements ParameterizedType<M> {
+	public static class MapType<K, V, M extends BetterMap<K, V>> implements ParameterizedType<M> {
 		public final FieldType<K> keyType;
 		public final FieldType<V> valueType;
 		public final boolean isSorted;
@@ -424,9 +485,9 @@ public interface FieldType<F> extends Comparator<F> {
 		@Override
 		public boolean isInstance(Object value) {
 			if (isSorted) {
-				if (!(value instanceof SortedMap))
+				if (!(value instanceof BetterSortedMap))
 					return false;
-			} else if (!(value instanceof Map))
+			} else if (!(value instanceof BetterMap))
 				return false;
 			for (Map.Entry<?, ?> entry : ((Map<?, ?>) value).entrySet()) {
 				if (!keyType.isInstance(entry.getKey()) || !valueType.isInstance(entry.getValue()))
@@ -472,11 +533,12 @@ public interface FieldType<F> extends Comparator<F> {
 				&& valueType.isAssignableFrom(mt.valueType);
 		}
 
-		public M createEmptyMap() {
+		@Override
+		public M createEmptyStructure() {
 			if (isSorted)
-				return (M) new TreeMap<>(keyType);
+				return (M) BetterTreeMap.create(keyType);
 			else
-				return (M) new LinkedHashMap<>();
+				return (M) BetterHashMap.create();
 		}
 
 		@Override
@@ -484,7 +546,7 @@ public interface FieldType<F> extends Comparator<F> {
 			if (equals(otherType))
 				return (M) value;
 			MapType<?, ?, ?> mt = (MapType<?, ?, ?>) otherType;
-			M newValue = createEmptyMap();
+			M newValue = createEmptyStructure();
 			for (Map.Entry<?, ?> entry : ((Map<?, ?>) value).entrySet()) {
 				newValue.put(keyType.convert(entry.getKey(), mt.keyType), valueType.convert(entry.getValue(), mt.valueType));
 			}
@@ -567,13 +629,13 @@ public interface FieldType<F> extends Comparator<F> {
 					return 1;
 			} else if (o2 == null)
 				return -1;
-			Iterator<? extends MultiEntryHandle<K, V>> iter1 = o1.entrySet().iterator();
-			Iterator<? extends MultiEntryHandle<K, V>> iter2 = o2.entrySet().iterator();
+			Iterator<? extends MultiMap.MultiEntry<K, V>> iter1 = o1.entrySet().iterator();
+			Iterator<? extends MultiMap.MultiEntry<K, V>> iter2 = o2.entrySet().iterator();
 			while (iter1.hasNext()) {
 				if (!iter2.hasNext())
 					return 1;
-				MultiEntryHandle<K, V> e1 = iter1.next();
-				MultiEntryHandle<K, V> e2 = iter2.next();
+				MultiMap.MultiEntry<K, V> e1 = iter1.next();
+				MultiMap.MultiEntry<K, V> e2 = iter2.next();
 				int comp = keyType.compare(e1.getKey(), e2.getKey());
 				if (comp != 0)
 					return comp;
@@ -608,11 +670,21 @@ public interface FieldType<F> extends Comparator<F> {
 				return false;
 		}
 
-		public M createEmptyMap() {
+		@Override
+		public M createEmptyStructure() {
 			if (isSorted)
 				return (M) BetterTreeMultiMap.create(keyType);
 			else
 				return (M) BetterHashMultiMap.create();
+		}
+
+		public M createEmptyMultiMap(Comparator<? super V> valueSort) {
+			if (valueSort == null)
+				return createEmptyStructure();
+			else if (isSorted)
+				return (M) BetterTreeMultiMap.<K, V> create(keyType, b -> b.withSortedValues(valueSort, false));
+			else
+				return (M) BetterHashMultiMap.<K, V> create(b -> b.withSortedValues(valueSort, false));
 		}
 
 		@Override
@@ -620,7 +692,7 @@ public interface FieldType<F> extends Comparator<F> {
 			if (equals(otherType))
 				return (M) value;
 
-			M newValue = createEmptyMap();
+			M newValue = createEmptyStructure();
 			if (otherType instanceof MapType) {
 				MapType<?, ?, ?> mt = (MapType<?, ?, ?>) otherType;
 				for (Map.Entry<?, ?> entry : ((Map<?, ?>) value).entrySet()) {
@@ -629,7 +701,7 @@ public interface FieldType<F> extends Comparator<F> {
 				return newValue;
 			} else {
 				MultiMapType<?, ?, ?> mt = (MultiMapType<?, ?, ?>) otherType;
-				for (MultiEntryHandle<?, ?> entry : ((BetterMultiMap<?, ?>) value).entrySet()) {
+				for (MultiMap.MultiEntry<?, ?> entry : ((MultiMap<?, ?>) value).entrySet()) {
 					K key = keyType.convert(entry.getKey(), mt.keyType);
 					for (Object v : entry.getValues())
 						newValue.add(key, valueType.convert(v, mt.valueType));

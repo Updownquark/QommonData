@@ -2,9 +2,11 @@ package org.qommons.data.impl;
 
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Function;
 
 import org.qommons.collect.BetterCollections;
 import org.qommons.collect.BetterSortedSet;
+import org.qommons.collect.CollectionLockingStrategy;
 import org.qommons.data.migration.MigrationSetDef;
 import org.qommons.data.types.EntityField;
 import org.qommons.data.types.EntityType;
@@ -18,8 +20,9 @@ import org.qommons.tree.BetterTreeSet;
 public class InMemoryMigratableEntitySet extends InMemoryEntitySet implements MigratableDataSet {
 	private final BetterSortedSet<MigrationSetDef> theMigrations;
 
-	public InMemoryMigratableEntitySet(ModifiableEntityTypeSet dataTypes) {
-		super(dataTypes);
+	public InMemoryMigratableEntitySet(ModifiableEntityTypeSet dataTypes,
+		Function<? super InMemoryMigratableEntitySet, CollectionLockingStrategy> locking) {
+		super(dataTypes, locking == null ? null : (Function<? super InMemoryEntitySet, ? extends CollectionLockingStrategy>) locking);
 		theMigrations = BetterTreeSet.createTreeSet(MigrationSetDef.SORT);
 	}
 
@@ -81,9 +84,9 @@ public class InMemoryMigratableEntitySet extends InMemoryEntitySet implements Mi
 
 	@Override
 	public GenericEntitySet immutableSchema(EntityTypeSet codeTypes) {
-		GenericEntitySet immutable = new InMemoryEntitySet(codeTypes);
+		GenericEntitySet immutable = new InMemoryEntitySet(codeTypes, __ -> getLock());
 		for (EntityType type : codeTypes.getEntityTypes()) {
-			if (type.getSuperType() == null) {
+			if (type.getSuperTypes().isEmpty()) {
 				for (GenericEntity entity : getEntities(type.getName())) {
 					copyEntity(entity, immutable);
 				}

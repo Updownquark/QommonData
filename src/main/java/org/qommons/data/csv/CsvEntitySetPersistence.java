@@ -52,48 +52,56 @@ public class CsvEntitySetPersistence implements EntitySetPersistence {
 	}
 
 	@Override
-	public void persist(GenericEntitySet dataSet, BetterFile destDataDir, Predicate<? super EntityType> excludeEntities)
-		throws IOException, TextParseException {
+	public void persistEntity(EntityType entityType, Iterable<? extends GenericEntity> entities,
+		Predicate<? super GenericEntity> changedTest, BetterFile destDataDir) throws IOException {
 		StringBuilder entry = new StringBuilder();
-		for (EntityType entityType : dataSet.getTypes().getEntityTypes()) {
-			if (excludeEntities != null && excludeEntities.test(entityType))
-				continue;
-			BetterFile entityFile = destDataDir.at(entityType.getName() + CSV_SUFFIX);
-			try (Writer out = new BufferedWriter(new OutputStreamWriter(entityFile.write(), StandardCharsets.UTF_8))) {
-				int headerIdx = 0;
-				EntityField<?>[] fieldOrder = new EntityField[entityType.getFields().size()];
-				// Write ID fields first
-				for (EntityField<?> field : entityType.getIdFields()) {
-					if (headerIdx > 0)
-						out.write(',');
+		BetterFile entityFile = destDataDir.at(entityType.getName() + CSV_SUFFIX);
+		try (Writer out = new BufferedWriter(new OutputStreamWriter(entityFile.write(), StandardCharsets.UTF_8))) {
+			int headerIdx = 0;
+			EntityField<?>[] fieldOrder = new EntityField[entityType.getFields().size()];
+			// Write ID fields first
+			for (EntityField<?> field : entityType.getIdFields()) {
+				if (headerIdx > 0)
+					out.write(',');
+				out.write(field.getName());
+				fieldOrder[headerIdx] = field;
+				headerIdx++;
+			}
+			for (EntityField<?> field : entityType.getFields()) {
+				// Mapped fields do not need to be persisted, since their content is based on the properties of the target entity
+				if (field.getMapping() == null && !field.isId()) {
+					out.write(',');
 					out.write(field.getName());
 					fieldOrder[headerIdx] = field;
 					headerIdx++;
 				}
-				for (EntityField<?> field : entityType.getFields()) {
-					if (!field.isId()) {
+			}
+			out.write('\n');
+
+			for (GenericEntity entity : entities) {
+				// CSV doesn't lend itself to being able to just rewrite certain entities,
+				// so we can't use the changed test
+				boolean firstEntry = true;
+				for (EntityField<?> field : fieldOrder) {
+					if (field == null) { // Just means there were mapped fields
+						continue;
+					} else if (firstEntry)
+						firstEntry = false;
+					else
 						out.write(',');
-						out.write(field.getName());
-						fieldOrder[headerIdx] = field;
-						headerIdx++;
-					}
+					MigrationUtil.printFieldValue(entry, field.getType(), entity.get(field));
+					out.write(CsvParser.toCsv(entry.toString(), ','));
+					entry.setLength(0);
 				}
 				out.write('\n');
-
-				for (GenericEntity entity : dataSet.getEntities(entityType.getName())) {
-					boolean firstEntry = true;
-					for (EntityField<?> field : fieldOrder) {
-						if (firstEntry)
-							firstEntry = false;
-						else
-							out.write(',');
-						MigrationUtil.printFieldValue(entry, field.getType(), entity.get(field));
-						out.write(CsvParser.toCsv(entry.toString(), ','));
-						entry.setLength(0);
-					}
-					out.write('\n');
-				}
 			}
+		}
+	}
+
+	@Override
+	public void persist(GenericEntitySet dataSet, BetterFile destDataDir) throws IOException {
+		for (EntityType entityType : dataSet.getTypes().getEntityTypes()) {
+			persistEntity(entityType, dataSet.getEntities(entityType.getName()), null, destDataDir);
 		}
 	}
 
@@ -137,7 +145,7 @@ public class CsvEntitySetPersistence implements EntitySetPersistence {
 			loadedTypes.put(entityType, EntityTypeLoadStatus.Loading);
 			boolean unresolvedReferences = false;
 			for (EntityField<?> field : entityType.getFields()) {
-				if (field.getType() instanceof EntityType//
+				if (field.getMapping() == null && field.getType() instanceof EntityType//
 					&& !loadEntities((EntityType) field.getType(), directory, suffix, entitySet, loadedTypes, firstRound)) {
 					if (field.isId()) {// ID reference cycle
 						loadedTypes.remove(entityType);
@@ -159,7 +167,12 @@ public class CsvEntitySetPersistence implements EntitySetPersistence {
 			Arrays.fill(fieldOrder, -1);
 			for (int i = 0; i < line.length; i++) {
 				EntityField<?> field = entityType.getField(line[i]);
-				if (field != null) {
+				if (field == null) {
+					System.err.println("Field " + entityType + "." + line[i] + " in header does not exist. This column will be ignored.");
+				} else if (field.getMapping() != null) {
+					System.err
+					.println("Field " + entityType + "." + line[i] + " in header is a mapped field. This column will be ignored.");
+				} else {
 					if (foundFields.add(line[i])) {
 						if (firstRound && field.getType() instanceof EntityType && !loadedTypes.containsKey(field.getType())) {
 							continue; // We don't yet have entities parsed for this type, so skip it for now
@@ -172,8 +185,7 @@ public class CsvEntitySetPersistence implements EntitySetPersistence {
 							fieldOrder[i] = field;
 					} else
 						System.err.println("Field " + field + " is present twice in the header.  The first entry will be used.");
-				} else
-					System.err.println("Field " + entityType + "." + line[i] + " in header does not exist. This column will be ignored.");
+				}
 			}
 			if (foundFields.size() != entityType.getFields().size()) {
 				if (foundIds < entityType.getIdFields().size())

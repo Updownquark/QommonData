@@ -1,9 +1,16 @@
 package org.qommons.data.types.modifiable;
 
+import java.util.Collections;
+import java.util.HashSet;
+import java.util.Set;
+
+import org.qommons.QommonsUtils;
 import org.qommons.data.migration.MigrationException;
 import org.qommons.data.types.EntityField;
 import org.qommons.data.types.EntityType;
+import org.qommons.data.types.FieldMapping;
 import org.qommons.data.types.FieldType;
+import org.qommons.data.values.GenericEntity;
 import org.qommons.io.FilePosition;
 
 public class ModifiableEntityField<F> implements EntityField<F> {
@@ -12,13 +19,20 @@ public class ModifiableEntityField<F> implements EntityField<F> {
 	private final FieldType<F> theType;
 	private final boolean isId;
 	private final Unmodifiable<F> theUnmodifiable;
-	private int theRootIndex;
+	private final FieldMapping<F, ?, ?> theMapping;
+	private FieldMapping<?, ?, ?> theMappingReference;
+	private FieldMapping<?, ?, ?> theIndexReference;
+	private final Set<FieldMapping<?, ?, ?>> theAncillaryMappingReferences;
 
-	ModifiableEntityField(ModifiableEntityType owner, String name, FieldType<F> type, boolean isId) {
+	ModifiableEntityField(ModifiableEntityType owner, String name, FieldType<F> type, boolean isId, FieldMappingPrecursor<?, ?> mapping,
+		FilePosition source) throws MigrationException {
 		theOwner = owner;
 		theName = name;
 		theType = type;
 		this.isId = isId;
+		theMapping = mapping == null ? null : mapping.createMapping(this);
+
+		theAncillaryMappingReferences = new HashSet<>();
 		theUnmodifiable = new Unmodifiable<>(this);
 	}
 
@@ -51,12 +65,40 @@ public class ModifiableEntityField<F> implements EntityField<F> {
 		return isId;
 	}
 
-	public int getRootIndex() {
-		return theRootIndex;
+	@Override
+	public FieldMapping<F, ?, ?> getMapping() {
+		return theMapping;
 	}
 
-	void setRootIndex(int rootIndex) {
-		theRootIndex = rootIndex;
+	@Override
+	public FieldMapping<?, ?, ?> getMappingReference() {
+		return theMappingReference;
+	}
+
+	void setReference(FieldMapping<?, ?, ?> reference) {
+		theMappingReference = reference;
+	}
+
+	@Override
+	public FieldMapping<?, ?, ?> getIndexReference() {
+		return theIndexReference;
+	}
+
+	void setIndexReference(FieldMapping<?, ?, ?> reference) {
+		theIndexReference = reference;
+	}
+
+	@Override
+	public Set<FieldMapping<?, ?, ?>> getAncillaryMappingReferences() {
+		return Collections.unmodifiableSet(theAncillaryMappingReferences);
+	}
+
+	void addAncillaryReference(FieldMapping<?, ?, ?> ancillaryReference) {
+		theAncillaryMappingReferences.add(ancillaryReference);
+	}
+
+	void removeAncillaryReference(FieldMapping<?, ?, ?> keyReference) {
+		theAncillaryMappingReferences.remove(keyReference);
 	}
 
 	public EntityField<F> unmodifiableView() {
@@ -69,17 +111,28 @@ public class ModifiableEntityField<F> implements EntityField<F> {
 
 	@Override
 	public String toString() {
-		String str = theOwner + "." + getName() + " (" + theType + ")";
-		if (theRootIndex < 0)
-			str += " (removed)";
-		return str;
+		return theOwner + "." + getName() + " (" + theType + ")";
 	}
 
 	static class Unmodifiable<F> implements EntityField<F> {
 		private final ModifiableEntityField<F> theSource;
+		private final FieldMapping<F, ?, ?> theMapping;
 
 		Unmodifiable(ModifiableEntityField<F> source) {
 			theSource = source;
+			theMapping = unmodifiableMapping(theSource.getMapping());
+		}
+
+		static <F, K, S> FieldMapping<F, K, S> unmodifiableMapping(FieldMapping<?, ?, ?> mapping) {
+			if (mapping == null)
+				return null;
+			return new FieldMapping<>(//
+				((ModifiableEntityField<F>) mapping.parentField).unmodifiableView(), //
+				((ModifiableEntityField<GenericEntity>) mapping.mappedReferenceField).unmodifiableView(), //
+				mapping.keyField == null ? null : ((ModifiableEntityField<K>) mapping.keyField).unmodifiableView(),
+					mapping.indexField == null ? null : ((ModifiableEntityField<Integer>) mapping.indexField).unmodifiableView(),
+						mapping.sortByField == null ? null : ((ModifiableEntityField<S>) mapping.sortByField).unmodifiableView(),
+							mapping.parentIsOwner);
 		}
 
 		ModifiableEntityField<F> getSource() {
@@ -110,6 +163,26 @@ public class ModifiableEntityField<F> implements EntityField<F> {
 		@Override
 		public boolean isId() {
 			return theSource.isId();
+		}
+
+		@Override
+		public FieldMapping<F, ?, ?> getMapping() {
+			return theMapping;
+		}
+
+		@Override
+		public FieldMapping<?, ?, ?> getMappingReference() {
+			return unmodifiableMapping(theSource.getMappingReference());
+		}
+
+		@Override
+		public FieldMapping<?, ?, ?> getIndexReference() {
+			return unmodifiableMapping(theSource.getIndexReference());
+		}
+
+		@Override
+		public Set<FieldMapping<?, ?, ?>> getAncillaryMappingReferences() {
+			return QommonsUtils.filterMapDistinct(theSource.getAncillaryMappingReferences(), null, Unmodifiable::unmodifiableMapping);
 		}
 
 		@Override

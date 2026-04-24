@@ -11,6 +11,10 @@ public interface GenericEntity {
 
 	<T> T get(EntityField<T> field);
 
+	String isEnabled(EntityField<?> field);
+
+	String isAcceptable(EntityField<?> field, Object value);
+
 	GenericEntity set(EntityField<?> field, Object value);
 
 	default Object[] getId() {
@@ -22,11 +26,36 @@ public interface GenericEntity {
 		return id;
 	}
 
+	default int compareToId(Object[] id) {
+		int i = 0;
+		for (EntityField<?> field : getType().getIdFields()) {
+			int comp = ((EntityField<Object>) field).getType().compare(id[i], get(field));
+			if (comp != 0)
+				return comp;
+			i++;
+		}
+		return 0;
+	}
+
 	default Object get(String fieldName) {
 		EntityField<?> field = getType().getField(fieldName);
 		if (field == null)
 			throw new IllegalArgumentException("No such field " + getType() + "." + fieldName);
 		return get(field);
+	}
+
+	default String isEnabled(String fieldName) {
+		EntityField<?> field = getType().getField(fieldName);
+		if (field == null)
+			throw new IllegalArgumentException("No such field " + getType() + "." + fieldName);
+		return isEnabled(field);
+	}
+
+	default String isAcceptable(String fieldName, Object value) {
+		EntityField<?> field = getType().getField(fieldName);
+		if (field == null)
+			throw new IllegalArgumentException("No such field " + getType() + "." + fieldName);
+		return isAcceptable(field, value);
 	}
 
 	default GenericEntity set(String fieldName, Object value) {
@@ -36,7 +65,7 @@ public interface GenericEntity {
 		return set(field, value);
 	}
 
-	void delete();
+	String canDelete();
 
-	GenericEntity immutableCopy();
+	void delete();
 }

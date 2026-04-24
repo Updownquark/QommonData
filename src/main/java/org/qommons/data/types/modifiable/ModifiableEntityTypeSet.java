@@ -49,11 +49,11 @@ public class ModifiableEntityTypeSet implements EntityTypeSet {
 		return theUnmodifiable;
 	}
 
-	public ModifiableEntityType createEntityType(String name, ModifiableEntityType superType, FilePosition source)
+	public ModifiableEntityType createEntityType(String name, ModifiableEntityType[] superTypes, FilePosition source)
 		throws MigrationException {
 		if (getEntityType(name) != null)
 			throw new MigrationException("An entity type named '" + name + "' already exists", source);
-		ModifiableEntityType newEntity = new ModifiableEntityType(this, superType, name);
+		ModifiableEntityType newEntity = new ModifiableEntityType(this, superTypes, name, source);
 		theEntityTypes.add(newEntity);
 		return newEntity;
 	}

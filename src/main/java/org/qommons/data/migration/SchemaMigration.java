@@ -3,6 +3,7 @@ package org.qommons.data.migration;
 import java.io.IOException;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -16,6 +17,7 @@ import org.qommons.data.types.EntityType;
 import org.qommons.data.types.EnumType;
 import org.qommons.data.types.EnumValue;
 import org.qommons.data.types.FieldType;
+import org.qommons.data.types.modifiable.FieldMappingPrecursor;
 import org.qommons.data.types.modifiable.ModifiableEntityField;
 import org.qommons.data.types.modifiable.ModifiableEntityType;
 import org.qommons.data.types.modifiable.ModifiableEntityTypeSet;
@@ -69,14 +71,14 @@ public abstract class SchemaMigration implements Migration {
 	}
 
 	public static class AddEntityMigration extends EntityTypeMigration {
-		public final String superType;
+		public final Set<String> superTypes;
 		public final Set<String> idFieldNames;
 		public final Map<String, AddFieldMigration> fields;
 
-		public AddEntityMigration(MigrationSet migrationSet, FilePosition position, String entityName, String superType,
+		public AddEntityMigration(MigrationSet migrationSet, FilePosition position, String entityName, Set<String> superTypes,
 			Set<String> idFieldNames, List<AddFieldMigration> fields) {
 			super(migrationSet, position, entityName);
-			this.superType = superType;
+			this.superTypes = superTypes;
 			this.idFieldNames = idFieldNames;
 			Map<String, AddFieldMigration> myFields = new HashMap<>();
 			for (AddFieldMigration field : fields)
@@ -92,12 +94,7 @@ public abstract class SchemaMigration implements Migration {
 		public ModifiableEntityType createEntityType(ModifiableEntityTypeSet entities,
 			ExFunction<String, ModifiableEntityType, MigrationException> uncreated) throws MigrationException {
 			ModifiableEntityType entityType;
-			if (superType != null) {
-				ModifiableEntityType superEntityType = entities.getEntityType(superType);
-				if (superEntityType == null)
-					throw new MigrationException("No such entity type found for super: " + superType, getPosition());
-				entityType = entities.createEntityType(entityName, superEntityType, getPosition());
-			} else {
+			if (superTypes.isEmpty()) {
 				Map<String, FieldType<?>> ids = new LinkedHashMap<>();
 				for (String id : idFieldNames) {
 					FieldType<?> type = MigrationUtil.parseFieldType(fields.get(id).type, entities, entityName, getPosition(), uncreated);
@@ -107,16 +104,24 @@ public abstract class SchemaMigration implements Migration {
 					ids.put(id, type);
 				}
 				entityType = entities.createEntityType(entityName, ids, getPosition());
+			} else {
+				ModifiableEntityType[] superEntityTypes = new ModifiableEntityType[superTypes.size()];
+				int s = 0;
+				for (String sup : superTypes) {
+					superEntityTypes[s] = entities.getEntityType(sup);
+					if (superEntityTypes[s] == null)
+						throw new MigrationException("No such entity type found for super: " + sup, getPosition());
+					s++;
+				}
+				entityType = entities.createEntityType(entityName, superEntityTypes, getPosition());
 			}
 			return entityType;
 		}
 
 		private ModifiableEntityType applySchemaChange(ModifiableEntityTypeSet entities) throws MigrationException {
 			ModifiableEntityType entityType = createEntityType(entities, null);
-			for (AddFieldMigration field : fields.values()) {
-				FieldType<?> type = MigrationUtil.parseFieldType(field.type, entities, null, getPosition(), null);
-				entityType.addField(field.fieldName, type, field.getPosition());
-			}
+			for (AddFieldMigration field : fields.values())
+				field.addField(entityType);
 			return entityType;
 		}
 
@@ -165,6 +170,9 @@ public abstract class SchemaMigration implements Migration {
 			ModifiableEntityType entityType = entities.getEntityType(entityName);
 			if (entityType == null)
 				throw new MigrationException("No such entity type found: " + entityName, getPosition());
+			else if (!entityType.getSubTypes().isEmpty())
+				throw new MigrationException("Sub-types of entities must be removed before the super type", getPosition());
+			boolean canMoveReferences;
 			if (moveTo != null) {
 				EntityType moveToType = entities.getEntityType(moveTo.targetEntity);
 				if (moveToType == null)
@@ -185,6 +193,36 @@ public abstract class SchemaMigration implements Migration {
 								getPosition());
 					}
 				}
+
+				// Ensure that any references to the given entity type can be converted to the move-to type
+				canMoveReferences = entityType.getRootType() == moveToType.getRootType();
+				if (canMoveReferences) {
+					// In every entity that references the deleted type (and whose type allows it,
+					// replace each instance with the replacement instance
+					for (ModifiableEntityType referrer : entityType.getReferrers()) {
+						if (referrer != entityType) {
+							for (ModifiableEntityField<GenericEntity> reference : entityType.getReferences(referrer)) {
+								if (!((ModifiableEntityType) reference.getType()).isAssignableFrom(moveToType))
+									throw new MigrationException("Field " + reference + " cannot be migrated to " + moveToType,
+										getPosition());
+							}
+						}
+					}
+				}
+			} else
+				canMoveReferences = false;
+			if (canMoveReferences) { // Already taken care of
+			} else if (entityType.getReferrers().isEmpty()) { // No references
+			} else if (entityType.getReferrers().size() == 1 && entityType.getReferrers().contains(entityType)) {
+				// Only self-references
+			} else {
+				StringBuilder str = new StringBuilder(
+					"References to entity type '" + entityName + "' must be removed before the entity type:");
+				for (ModifiableEntityType referrer : entityType.getReferrers()) {
+					for (ModifiableEntityField<?> reference : entityType.getReferences(referrer))
+						str.append("\n\t").append(referrer.getName()).append('.').append(reference.getName());
+				}
+				throw new MigrationException(str.toString(), getPosition());
 			}
 			entityType.delete(getPosition());
 		}
@@ -199,6 +237,7 @@ public abstract class SchemaMigration implements Migration {
 				EntityType moveToType = dataSet.getTypes().getEntityType(moveTo.targetEntity);
 				if (moveToType == null)
 					throw new MigrationException("Target entity type not found: " + moveTo.targetEntity, getPosition());
+				Map<GenericEntity, GenericEntity> replacements = new IdentityHashMap<>();
 				GenericEntitySet view = dataSet.createView(getAffectedEntities(), getRequiredEntitiesAndFields());
 				EntityMoveMigrator migrator = (EntityMoveMigrator) migrators.get(moveTo.migrator.getName());
 				for (GenericEntity toDelete : view.getEntities(entityName)) {
@@ -223,8 +262,32 @@ public abstract class SchemaMigration implements Migration {
 						}
 						migrator.copyData(toDelete, replacement);
 					}
+					replacements.put(toDelete, replacement);
 				}
 				entityType.delete(getPosition());
+
+				// In every entity that references the deleted type, replace each instance with the replacement instance
+				for (ModifiableEntityType referrer : entityType.getReferrers()) {
+					if (referrer != entityType) {
+						Set<? extends ModifiableEntityField<GenericEntity>> references = entityType.getReferences(referrer);
+						for (GenericEntity referrerEntity : dataSet.getEntities(referrer.getName())) {
+							for (ModifiableEntityField<GenericEntity> reference : references) {
+								GenericEntity referenceEntity = referrerEntity.get(reference);
+								if (referenceEntity != null) {
+									referrerEntity.set(reference, replacements.get(referenceEntity));
+								}
+							}
+						}
+					}
+				}
+				if (entityType.getRootType() == moveToType.getRootType()) {
+					for (ModifiableEntityType referrer : entityType.getReferrers()) {
+						if (referrer != entityType)
+							for (ModifiableEntityField<GenericEntity> reference : entityType.getReferences(referrer)) {
+							}
+					}
+				}
+
 				dataSet.entityTypeRemoved(entityType);
 			}
 		}
@@ -289,14 +352,25 @@ public abstract class SchemaMigration implements Migration {
 
 	public static class AddFieldMigration extends EntityFieldMigration {
 		public final String type;
+		public final String mappedReference;
+		public final String mappedKey;
+		public final String mappedIndex;
+		public final String mappedSortBy;
+		public final boolean ownsTargetEntity;
 		public final String initValue;
 		public final ConfigurableCustomMigrator<EntityFieldInitializer> initializer;
 		public final Map<String, Set<String>> requiredFields;
 
 		public AddFieldMigration(MigrationSet migrationSet, FilePosition position, String entityName, String fieldName, String type,
-			String initValue, ConfigurableCustomMigrator<EntityFieldInitializer> initializer, Map<String, Set<String>> requiredFields) {
+			String mappedReference, String mappedKey, String mappedIndex, String mappedSortBy, boolean ownsTarget, String initValue,
+			ConfigurableCustomMigrator<EntityFieldInitializer> initializer, Map<String, Set<String>> requiredFields) {
 			super(migrationSet, position, entityName, fieldName);
 			this.type = type;
+			this.mappedReference = mappedReference;
+			this.mappedKey = mappedKey;
+			this.mappedIndex = mappedIndex;
+			this.mappedSortBy = mappedSortBy;
+			this.ownsTargetEntity = ownsTarget;
 			this.initValue = initValue;
 			this.initializer = initializer;
 			this.requiredFields = requiredFields;
@@ -316,8 +390,14 @@ public abstract class SchemaMigration implements Migration {
 			ModifiableEntityType entityType = entities.getEntityType(entityName);
 			if (entityType == null)
 				throw new MigrationException("No such entity type '" + entityName + "'", getPosition());
-			FieldType<?> realType = MigrationUtil.parseFieldType(type, entities, null, getPosition(), null);
-			return entityType.addField(fieldName, realType, getPosition());
+			return addField(entityType);
+		}
+
+		public ModifiableEntityField<?> addField(ModifiableEntityType entityType) throws MigrationException {
+			FieldType<?> realType = MigrationUtil.parseFieldType(type, entityType.getTypeSet(), null, getPosition(), null);
+			FieldMappingPrecursor<?, ?> mapping = mappedReference == null ? null : new FieldMappingPrecursor<>(entityType, fieldName,
+				realType, mappedReference, mappedKey, mappedIndex, mappedSortBy, ownsTargetEntity, getPosition());
+			return entityType.addField(fieldName, realType, mapping, getPosition());
 		}
 
 		@Override
@@ -351,18 +431,20 @@ public abstract class SchemaMigration implements Migration {
 
 		@Override
 		public void apply(MigratableDataSet dataSet, Map<String, CustomMigrationComponent> migrators)
-			throws IOException, TextParseException, MigrationException, DataSetModificationException {
+			throws IOException, TextParseException, DataSetModificationException {
 			ModifiableEntityField<?> field = applySchemaChange(dataSet.getTypes());
 			EntityFieldInitializer migrator = initializer == null ? null : (EntityFieldInitializer) migrators.get(initializer.getName());
 			fieldAdded(field, dataSet, migrator);
 		}
 
 		private <F> void fieldAdded(ModifiableEntityField<F> field, MigratableDataSet dataSet, EntityFieldInitializer migrator)
-			throws IOException, TextParseException, MigrationException, DataSetModificationException {
+			throws IOException, TextParseException, DataSetModificationException {
 			F initialValue;
-			if (initValue != null) {
+			if (initValue != null)
 				initialValue = MigrationUtil.parseFieldValue(initValue, field.getType(), dataSet, this::getPosition);
-			} else
+			else if (field.getType() instanceof FieldType.ParameterizedType)
+				initialValue = ((FieldType.ParameterizedType<F>) field.getType()).createEmptyStructure();
+			else
 				initialValue = null;
 			dataSet.entityFieldAdded(field, initialValue);
 			if (initValue != null || initializer != null) {
@@ -387,6 +469,18 @@ public abstract class SchemaMigration implements Migration {
 			ModifiableEntityField<?> field = entityType.getField(fieldName);
 			if (field == null)
 				throw new MigrationException("No such field " + entityName + "." + fieldName, getPosition());
+			else if (field.getOwner() != entityType)
+				throw new MigrationException("Field " + entityName + "." + fieldName + " is owned by super-type " + field.getOwner(),
+					getPosition());
+			else if (field.getMappingReference() != null)
+				throw new MigrationException("Field " + field + " is referenced by mapped field: " + field.getMappingReference(),
+					getPosition());
+			else if (field.getIndexReference() != null)
+				throw new MigrationException("Field " + field + " is referenced by mapped field: " + field.getIndexReference(),
+					getPosition());
+			else if (!field.getAncillaryMappingReferences().isEmpty())
+				throw new MigrationException("Field " + field + " is referenced by mapped fields: " + field.getAncillaryMappingReferences(),
+					getPosition());
 			field.delete();
 			return field;
 		}
@@ -478,6 +572,12 @@ public abstract class SchemaMigration implements Migration {
 			ModifiableEnumType enumType = entities.getEnumType(enumName);
 			if (enumType == null)
 				throw new MigrationException("No such enum '" + enumName + "'", getPosition());
+			for (EntityType entity : entities.getEntityTypes()) {
+				for (EntityField<?> field : entity.getLocalFields()) {
+					if (field.getType() == enumType)
+						throw new MigrationException("Enum '" + enumName + "' is referred to by field " + field, getPosition());
+				}
+			}
 			enumType.delete(getPosition());
 		}
 

@@ -20,13 +20,10 @@ import java.util.Map;
 import java.util.NavigableMap;
 import java.util.Set;
 import java.util.TreeMap;
-import java.util.function.Predicate;
 
 import org.qommons.ClassMap.TypeMatch;
 import org.qommons.IterableUtils;
-import org.qommons.Stamped;
 import org.qommons.TimeUtils;
-import org.qommons.collect.BetterMultiMap;
 import org.qommons.collect.BetterSortedSet;
 import org.qommons.collect.MultiMap;
 import org.qommons.data.impl.DataSetMigrationException.MigrationFailureCause;
@@ -100,64 +97,53 @@ public class VersionedDataScheme {
 
 		public LoadedEntityData mapToCode(EntityMapping entityMapping) throws IOException, TextParseException {
 			MappedEntitySet mappedEntities = MappedEntitySet.create(entityData, mappedEntityTypes, entityMapping);
-			return new LoadedEntityData(mappedEntityTypes, mappedEntities, persistenceDir);
+			return new LoadedEntityData(mappedEntityTypes.getGenericTypes(), mappedEntities, persistenceDir);
+		}
+
+		public RollingEntitySetPersistence createPersister(EntitySetPersistence persistence) throws IOException {
+			return new RollingEntitySetPersistence(mappedEntityTypes.getGenericTypes(), persistenceDir, persistence, true);
 		}
 	}
 
 	public static class LoadedEntityData {
-		public final EntityTypeSetMapping mappedEntityTypes;
+		public final EntityTypeSet entityTypes;
 		public final MappedEntitySet entityData;
 		public final BetterFile persistenceDir;
 
-		public LoadedEntityData(EntityTypeSetMapping mappedEntityTypes, MappedEntitySet entityData, BetterFile persistenceDir) {
-			this.mappedEntityTypes = mappedEntityTypes;
+		public LoadedEntityData(EntityTypeSet entityTypes, MappedEntitySet entityData, BetterFile persistenceDir) {
+			this.entityTypes = entityTypes;
 			this.entityData = entityData;
 			this.persistenceDir = persistenceDir;
 		}
+	}
 
-		public RollingEntitySetPersistence createPersister(EntitySetPersistence persistence) throws IOException {
-			return new RollingEntitySetPersistence(mappedEntityTypes, persistenceDir, persistence, entityData, true);
-		}
+	public interface PersistenceMonitor {
+		void persistenceSucceeded(long stamp);
+
+		void persistenceAborted(long stamp);
+
+		void persistenceFailed(long stamp, String error, Throwable exception);
 	}
 
 	public static class RollingEntitySetPersistence {
 		private static final Duration PERSISTENCE_DELAY = Duration.ofMillis(200);
 
-		public final EntityTypeSetMapping mappedEntityTypes;
+		public final EntityTypeSet entityTypes;
 		public final BetterFile persistenceDir;
 		private final EntitySetPersistence thePersistence;
-		private final Map<EntityTypeMapping<? extends Stamped>, Long> theTypeStamps;
 		private final Map<EntityType, String> theTypeFileHashes;
 		private volatile long theSaveStamp;
 		private Instant theCurrentDataTime;
 		private TemporalBackupScheme theBackupScheme;
 
-		public RollingEntitySetPersistence(EntityTypeSetMapping types, BetterFile persistenceDir, EntitySetPersistence persistence,
-			MappedEntitySet entityData, boolean optimizeWrites) throws IOException {
-			mappedEntityTypes = types;
+		public RollingEntitySetPersistence(EntityTypeSet types, BetterFile persistenceDir, EntitySetPersistence persistence,
+			boolean optimizeWrites) throws IOException {
+			this.entityTypes = types;
 			this.persistenceDir = persistenceDir;
 			thePersistence = persistence;
-			// See if we can save time by preserving aggregate stamps for entity types
-			Map<EntityTypeMapping<? extends Stamped>, Long> typeStamps = null;
-			if (optimizeWrites) {
-				for (EntityTypeMapping<?> type : types.getEntityTypes().values()) {
-					if (Stamped.class.isAssignableFrom(type.getRealType())) {
-						if (typeStamps == null)
-							typeStamps = new HashMap<>();
-						long stamp;
-						if (entityData == null)
-							stamp = -1; // We'll persist the first round regardless
-						else {
-							stamp = getTypeStamp(entityData, (Class<? extends Stamped>) type.getRealType());
-						}
-						typeStamps.put((EntityTypeMapping<? extends Stamped>) type, stamp);
-					}
-				}
-			}
-			theTypeStamps = typeStamps;
 			if (optimizeWrites) {
 				theTypeFileHashes = new HashMap<>();
-				for (EntityType type : types.getGenericTypes().getEntityTypes()) {
+				for (EntityType type : types.getEntityTypes()) {
 					String hash = thePersistence.getPersistentEntityHash(persistenceDir, type);
 					if (hash == null)
 						hash = "";
@@ -177,7 +163,7 @@ public class VersionedDataScheme {
 		 * @throws IOException If <code>optimizeWrites</code> is true and inspection of the existing persistent data fails
 		 */
 		public RollingEntitySetPersistence writeTo(BetterFile newPersistenceDir, boolean optimizeWrites) throws IOException {
-			return new RollingEntitySetPersistence(mappedEntityTypes, newPersistenceDir, thePersistence, null, optimizeWrites);
+			return new RollingEntitySetPersistence(entityTypes, newPersistenceDir, thePersistence, optimizeWrites);
 		}
 
 		public RollingEntitySetPersistence withBackup(TemporalBackupScheme backup) {
@@ -227,79 +213,86 @@ public class VersionedDataScheme {
 			path.setLength(preLen);
 		}
 
-		public void save(Iterable<?> entities) throws IOException, TextParseException {
-			theSaveStamp++; // Stop any unfinished save operations from running, since these are now obsolete
-			Map<EntityType, Long> updatedEntities;
-			EntityExclusionByStamp excludeEntities;
-			if (theTypeStamps != null) {
-				MappedEntitySet entitySet = MappedEntitySet.create(entities, mappedEntityTypes);
-				Map<EntityTypeMapping<? extends Stamped>, Long> modifiedStamps = new HashMap<>();
-				Set<EntityType> excluded = new HashSet<>();
-				synchronized (theTypeStamps) {
-					for (Map.Entry<EntityTypeMapping<? extends Stamped>, Long> stampedType : theTypeStamps.entrySet()) {
-						long newStamp = getTypeStamp(entitySet, stampedType.getKey().getRealType());
-						if (newStamp == stampedType.getValue().longValue())
-							excluded.add(stampedType.getKey().getGenericType());
-						else
-							modifiedStamps.put(stampedType.getKey(), newStamp);
-					}
-				}
-				excludeEntities = new EntityExclusionByStamp(modifiedStamps, excluded);
-			} else {
-				excludeEntities = null;
+		public long save(GenericEntitySet entities, Iterable<? extends EntityType> onlyTypes, PersistenceMonitor monitor)
+			throws IOException {
+			long stamp = ++theSaveStamp;
+			// Persist the data to memory
+			BetterFile memoryPersistence = persistToMemory(entities, onlyTypes, stamp, monitor);
+			if (memoryPersistence != null) {
+				long fStamp = stamp = ++theSaveStamp;
+				QommonsTimer.getCommonInstance().offload(() -> persist(memoryPersistence, fStamp, monitor), PERSISTENCE_DELAY);
 			}
-			EntitySetGenerifier generifier = new EntitySetGenerifier(mappedEntityTypes).exclude(excludeEntities);
-			generifier.add(entities);
+			return stamp;
+		}
+
+		public long save(MappedEntitySet entities, Iterable<? extends EntityType> onlyTypes, PersistenceMonitor monitor)
+			throws IOException {
+			theSaveStamp++; // Stop any unfinished save operations from running, since these are now obsolete
+			EntitySetGenerifier generifier = new EntitySetGenerifier(entities.getTypes());
+			generifier.add(entities.getAll());
 			GenericEntitySet genericEntities = generifier.getEntities();
 			long stamp = ++theSaveStamp;
-			QommonsTimer.getCommonInstance().offload(() -> persist(genericEntities, stamp, excludeEntities), PERSISTENCE_DELAY);
+			QommonsTimer.getCommonInstance().offload(() -> persist(genericEntities, onlyTypes, stamp, monitor), PERSISTENCE_DELAY);
+			return stamp;
 		}
 
-		private static class EntityExclusionByStamp implements Predicate<EntityTypeMapping<?>> {
-			final Map<EntityTypeMapping<? extends Stamped>, Long> modifiedStamps;
-			final Set<EntityType> excludedEntities;
-
-			EntityExclusionByStamp(Map<EntityTypeMapping<? extends Stamped>, Long> modifiedStamps, Set<EntityType> excludedEntities) {
-				this.modifiedStamps = modifiedStamps;
-				this.excludedEntities = excludedEntities;
-			}
-
-			@Override
-			public boolean test(EntityTypeMapping<?> type) {
-				return excludedEntities.contains(type.getGenericType());
-			}
-		}
-
-		private static long getTypeStamp(MappedEntitySet entityData, Class<? extends Stamped> type) {
-			return Stamped.compositeStamp(entityData.get(type, false));
-		}
-
-		private synchronized void persist(GenericEntitySet entities, long stamp, EntityExclusionByStamp excludeEntities) {
+		private synchronized void persist(GenericEntitySet entities, Iterable<? extends EntityType> onlyTypes, long stamp,
+			PersistenceMonitor monitor) {
 			if (stamp != theSaveStamp) {
+				if (monitor != null)
+					monitor.persistenceAborted(stamp);
 				return;// Another save operation has happened, so this operation is obsolete
 			}
 			// Persist the data to memory
+			BetterFile memoryPersistence = persistToMemory(entities, onlyTypes, stamp, monitor);
+			if (memoryPersistence != null)
+				persist(memoryPersistence, stamp, monitor);
+		}
+
+		private BetterFile persistToMemory(GenericEntitySet entities, Iterable<? extends EntityType> onlyTypes, long stamp,
+			PersistenceMonitor monitor) {
+			// Persist the data to memory
 			BetterFile memoryPersistence = new InMemoryFileSystem().at("/QommonsPersistence/");
 			try {
-				thePersistence.persist(entities, memoryPersistence,
-					excludeEntities == null ? null : excludeEntities.excludedEntities::contains);
+				if (onlyTypes == null)
+					thePersistence.persist(entities, memoryPersistence);
+				else {
+					for (EntityType type : onlyTypes) {
+						if (stamp != theSaveStamp) {
+							if (monitor != null)
+								monitor.persistenceAborted(stamp);
+							return null;
+						}
+						thePersistence.persistEntity(type, entities.getEntities(type.getName()), null, memoryPersistence);
+					}
+				}
 			} catch (IOException e) {
-				System.err.println("In-memory files should not throw IOExceptions!");
-				e.printStackTrace();
-				return;
-			} catch (TextParseException e) {
-				System.err.println("In-memory entity sets should not throw parse exceptions!");
-				e.printStackTrace();
-				return;
+				if (monitor == null) {
+					System.err.println("In-memory files should not throw IOExceptions!");
+					e.printStackTrace();
+				} else
+					monitor.persistenceFailed(stamp, "In-memory files should not throw IOExceptions!", e);
+				return null;
 			}
+			return memoryPersistence;
+		}
+
+		private synchronized void persist(BetterFile memoryPersistence, long stamp, PersistenceMonitor monitor) {
 			if (stamp != theSaveStamp) {
+				if (monitor != null)
+					monitor.persistenceAborted(stamp);
 				return;
 			}
 			Map<EntityType, String> entityDataChanges = null;
 			if (theTypeFileHashes != null) {
 				try {
 					// Check the file hashes to see what's actually changed so we don't persist anything
-					for (EntityType entity : mappedEntityTypes.getGenericTypes().getEntityTypes()) {
+					for (EntityType entity : entityTypes.getEntityTypes()) {
+						if (stamp != theSaveStamp) {
+							if (monitor != null)
+								monitor.persistenceAborted(stamp);
+							return;
+						}
 						String newHash = thePersistence.getPersistentEntityHash(memoryPersistence, entity);
 						if (newHash == null) // Not persisted due to exclusion
 							continue;
@@ -317,6 +310,8 @@ public class VersionedDataScheme {
 				}
 				if (stamp != theSaveStamp // Obsolete persistence call
 					|| entityDataChanges == null) { // Nothing persistent has actually changed
+					if (monitor != null)
+						monitor.persistenceAborted(stamp);
 					return;
 				}
 			}
@@ -360,27 +355,34 @@ public class VersionedDataScheme {
 			try {
 				writeTempPersistentData(memoryPersistence, persistenceDir, written);
 			} catch (IOException | RuntimeException e) {
-				System.err.println("Failed phase 1 of persistence sequence");
-				e.printStackTrace();
 				// Nothing's been changed. We can just delete the temp files we've already written.
 				deleteFiles(written, ".OLD");
 				deleteFiles(written, ".NEW");
+				if (monitor == null) {
+					System.err.println("Failed phase 1 of persistence sequence");
+					e.printStackTrace();
+				} else {
+					monitor.persistenceFailed(stamp, "Failed phase 1 of persistence sequence", e);
+				}
 				return;
 			}
 			try {
 				replaceFiles(written, ".NEW");
 				// Data replacement succeeded. Clean up and update stuff.
-				if (excludeEntities != null) {
-					synchronized (theTypeStamps) {
-						theTypeStamps.putAll(excludeEntities.modifiedStamps);
-					}
-				}
 				theTypeFileHashes.putAll(entityDataChanges); // Update the file hashes after we've written the data
 				deleteFiles(written, ".OLD");
+				if (monitor != null)
+					monitor.persistenceSucceeded(stamp);
 			} catch (IOException | RuntimeException e) {
 				// Data replacement failed. Revert to the backed up data.
 				replaceFilesForceAll(written, ".OLD");
 				deleteFiles(written, ".NEW");
+				if (monitor == null) {
+					System.err.println("Failed phase 2 of persistence sequence");
+					e.printStackTrace();
+				} else {
+					monitor.persistenceFailed(stamp, "Failed phase 2 of persistence sequence", e);
+				}
 			}
 		}
 
@@ -565,7 +567,7 @@ public class VersionedDataScheme {
 			if (initDataDir != null)
 				currentData = tryToUseDir(initDataDir, false, newDataDir, codeTypes, migrations, persistence);
 			if (currentData == null) { // No data to load
-				GenericEntitySet dataSet = new InMemoryEntitySet(codeTypes);
+				GenericEntitySet dataSet = new InMemoryEntitySet(codeTypes, null);
 				if (!newDataDir.isDirectory())
 					newDataDir.create(true);
 				currentData = new PersistedEntitySet(newDataDir, dataSet);
@@ -635,7 +637,7 @@ public class VersionedDataScheme {
 			else
 				throw new DataSetMigrationException(MigrationFailureCause.IncompatibleVersion);
 		} else if (migrationDiff.unappliedMigrations.isEmpty()) { // This data is up-to-date
-			GenericEntitySet dataSet = new InMemoryEntitySet(codeTypes);
+			GenericEntitySet dataSet = new InMemoryEntitySet(codeTypes, null);
 			try {
 				persistence.populate(dataSet, sourceDataDir);
 			} catch (TextParseException e) {
@@ -651,7 +653,7 @@ public class VersionedDataScheme {
 		} catch (TextParseException e) {
 			throw new DataSetMigrationException(MigrationFailureCause.InvalidDataSet, "Unable to read data schema", e);
 		}
-		MigratableDataSet dataSet = new InMemoryMigratableEntitySet(dataTypes);
+		MigratableDataSet dataSet = new InMemoryMigratableEntitySet(dataTypes, null);
 		try {
 			persistence.populate(dataSet, sourceDataDir);
 		} catch (TextParseException e) {
@@ -689,25 +691,19 @@ public class VersionedDataScheme {
 				out.write('\n');
 			}
 		}
-		persistence.persist(dataSet, directory, null);
+		persistence.persist(dataSet, directory);
 	}
 
 	public static class EntitySetGenerifier {
 		private final EntityTypeSetMapping theTypes;
 		private final GenericEntitySet theEntities;
-		private Predicate<? super EntityTypeMapping<?>> theExcludedEntities;
 
 		public EntitySetGenerifier(EntityTypeSetMapping types) {
 			theTypes = types;
-			theEntities = new InMemoryEntitySet(types.getGenericTypes());
+			theEntities = new InMemoryEntitySet(types.getGenericTypes(), null);
 		}
 
-		public EntitySetGenerifier exclude(Predicate<? super EntityTypeMapping<?>> excludeEntities) {
-			theExcludedEntities = excludeEntities;
-			return this;
-		}
-
-		public EntitySetGenerifier add(Iterable<?> entities) throws IOException, TextParseException {
+		public EntitySetGenerifier add(Iterable<?> entities) throws IOException {
 			try {
 				for (Object entity : entities)
 					getOrCreateEntity(entity, null, false);
@@ -723,10 +719,8 @@ public class VersionedDataScheme {
 		}
 
 		public GenericEntity getOrCreateEntity(Object entity, EntityTypeMapping<?> superType, boolean inId)
-			throws IllegalAccessException, IllegalArgumentException, InvocationTargetException, IOException, TextParseException {
+			throws IllegalAccessException, IllegalArgumentException, InvocationTargetException, IOException {
 			EntityTypeMapping<?> type = getType(entity, superType);
-			if (!inId && theExcludedEntities != null && theExcludedEntities.test(type))
-				return null;
 			Object[] id = getId(entity, type);
 			GenericEntity genericEntity = theEntities.getEntity(type.getName(), id);
 			if (genericEntity == null)
@@ -752,7 +746,7 @@ public class VersionedDataScheme {
 		}
 
 		private Object[] getId(Object entity, EntityTypeMapping<?> type)
-			throws IllegalAccessException, IllegalArgumentException, InvocationTargetException, IOException, TextParseException {
+			throws IllegalAccessException, IllegalArgumentException, InvocationTargetException, IOException {
 			Object[] id = new Object[type.getGenericType().getIdFields().size()];
 			int i = 0;
 			for (EntityFieldMapping<?, ?> field : type.getIdFields()) {
@@ -763,7 +757,7 @@ public class VersionedDataScheme {
 		}
 
 		private Object generifyField(Object value, FieldType<?> fieldType, boolean inId)
-			throws IllegalAccessException, IllegalArgumentException, InvocationTargetException, IOException, TextParseException {
+			throws IllegalAccessException, IllegalArgumentException, InvocationTargetException, IOException {
 			if (typeNeedsGenerification(fieldType)) {
 				if (value == null) { // No conversion necessary
 				} else if (fieldType instanceof EnumType)
@@ -796,16 +790,16 @@ public class VersionedDataScheme {
 		}
 
 		private <E> Object generifyCollection(Collection<?> value, FieldType.CollectionType<E, ?> fieldType)
-			throws IllegalAccessException, IllegalArgumentException, InvocationTargetException, TextParseException, IOException {
-			Collection<E> genericCollection = fieldType.createEmptyCollection();
+			throws IllegalAccessException, IllegalArgumentException, InvocationTargetException, IOException {
+			Collection<E> genericCollection = fieldType.createEmptyStructure();
 			for (Object element : value)
 				genericCollection.add((E) generifyField(element, fieldType.componentType, false));
 			return genericCollection;
 		}
 
 		private <K, V> Object generifyMap(Map<?, ?> value, FieldType.MapType<K, V, ?> fieldType)
-			throws IllegalAccessException, IllegalArgumentException, InvocationTargetException, TextParseException, IOException {
-			Map<K, V> genericMap = fieldType.createEmptyMap();
+			throws IllegalAccessException, IllegalArgumentException, InvocationTargetException, IOException {
+			Map<K, V> genericMap = fieldType.createEmptyStructure();
 			for (Map.Entry<?, ?> entry : value.entrySet())
 				genericMap.put(//
 					(K) generifyField(entry.getKey(), fieldType.keyType, false), //
@@ -814,8 +808,8 @@ public class VersionedDataScheme {
 		}
 
 		private <K, V> Object generifyMultiMap(MultiMap<?, ?> value, FieldType.MultiMapType<K, V, ?> fieldType)
-			throws IllegalAccessException, IllegalArgumentException, InvocationTargetException, TextParseException, IOException {
-			BetterMultiMap<K, V> genericMap = fieldType.createEmptyMap();
+			throws IllegalAccessException, IllegalArgumentException, InvocationTargetException, IOException {
+			MultiMap<K, V> genericMap = fieldType.createEmptyStructure();
 			for (MultiMap.MultiEntry<?, ?> entry : value.entrySet()) {
 				for (Object v : entry.getValues()) {
 					genericMap.add(//
@@ -827,7 +821,7 @@ public class VersionedDataScheme {
 		}
 
 		public void populate(Object entity, EntityTypeMapping<?> superType, Map<Object, Boolean> filledOut)
-			throws IllegalAccessException, IllegalArgumentException, InvocationTargetException, IOException, TextParseException {
+			throws IllegalAccessException, IllegalArgumentException, InvocationTargetException, IOException {
 			if (filledOut.put(entity, Boolean.TRUE) != null)
 				return;
 			EntityTypeMapping<?> type = getType(entity, superType);

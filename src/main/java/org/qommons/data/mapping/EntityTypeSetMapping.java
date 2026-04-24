@@ -203,6 +203,8 @@ public class EntityTypeSetMapping {
 		String getEntityName(Class<?> type, T entity);
 
 		String getField(T entity, Method getter);
+
+		Class<?> getGenericRawType(Class<?> fieldType);
 	}
 
 	public static EntityTypeSetMapping parseTypeSet(EntityTypeSet genericTypes, Set<Class<?>> entityTypes,
@@ -287,7 +289,7 @@ public class EntityTypeSetMapping {
 									.computeIfAbsent(genericType.getName(), __ -> new TreeSet<>(Named.DISTINCT_NUMBER_TOLERANT))
 									.add(new MappedFieldDiff(null, method, fieldName, "Present in code, but not in documentation"));
 								} else {
-									fields.put(fieldName, new EntityFieldMapping<>(field, method));
+									fields.put(fieldName, new EntityFieldMapping<>(mapping, field, method, theMappedTypeSet));
 									checkField(mapping, method, field);
 								}
 							}
@@ -335,7 +337,7 @@ public class EntityTypeSetMapping {
 				ParameterizedType pt = (ParameterizedType) type;
 				if (!(pt.getRawType() instanceof Class))
 					return false;
-				Class<?> raw = (Class<?>) pt.getRawType();
+				Class<?> raw = theEntityMapping.getGenericRawType((Class<?>) pt.getRawType());
 				Type[] params = pt.getActualTypeArguments();
 				if (SortedMultiMap.class.isAssignableFrom(raw)) {//
 				} else if (MultiMap.class.isAssignableFrom(raw)) {//

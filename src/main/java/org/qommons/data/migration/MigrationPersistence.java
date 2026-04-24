@@ -22,6 +22,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.regex.Pattern;
 
+import org.qommons.IterableUtils;
 import org.qommons.Named;
 import org.qommons.QommonsUtils;
 import org.qommons.StringUtils;
@@ -144,32 +145,32 @@ public class MigrationPersistence {
 		case "remove-entity":
 			return parseRemoveEntityMigration(xml, migSet, migrators);
 		case "rename-entity":
-			return new SchemaMigration.RenameEntityMigration(migSet, xml.getNamePosition().getPosition(0), getIdentifier(xml, "entity"),
-				getIdentifier(xml, "rename-to"));
+			return new SchemaMigration.RenameEntityMigration(migSet, xml.getNamePosition().getPosition(0),
+				getIdentifier(xml, "entity", true), getIdentifier(xml, "rename-to", true));
 		case "add-field":
-			return parseAddFieldMigration(xml, migSet, getIdentifier(xml, "entity"), migrators);
+			return parseAddFieldMigration(xml, migSet, getIdentifier(xml, "entity", true), migrators);
 		case "remove-field":
-			return new SchemaMigration.RemoveFieldMigration(migSet, xml.getNamePosition().getPosition(0), getIdentifier(xml, "entity"),
-				getIdentifier(xml, "field"));
+			return new SchemaMigration.RemoveFieldMigration(migSet, xml.getNamePosition().getPosition(0),
+				getIdentifier(xml, "entity", true), getIdentifier(xml, "field", true));
 		case "rename-field":
-			return new SchemaMigration.RenameFieldMigration(migSet, xml.getNamePosition().getPosition(0), getIdentifier(xml, "entity"),
-				getIdentifier(xml, "field"), getIdentifier(xml, "rename-to"));
+			return new SchemaMigration.RenameFieldMigration(migSet, xml.getNamePosition().getPosition(0),
+				getIdentifier(xml, "entity", true), getIdentifier(xml, "field", true), getIdentifier(xml, "rename-to", true));
 		case "add-enum":
 			return parseAddEnumMigration(xml, migSet);
 		case "remove-enum":
-			return new SchemaMigration.RemoveEnumMigration(migSet, xml.getNamePosition().getPosition(0), getIdentifier(xml, "name"));
+			return new SchemaMigration.RemoveEnumMigration(migSet, xml.getNamePosition().getPosition(0), getIdentifier(xml, "name", true));
 		case "rename-enum":
-			return new SchemaMigration.RenameEnumMigration(migSet, xml.getNamePosition().getPosition(0), getIdentifier(xml, "enum"),
-				getIdentifier(xml, "rename-to"));
+			return new SchemaMigration.RenameEnumMigration(migSet, xml.getNamePosition().getPosition(0), getIdentifier(xml, "enum", true),
+				getIdentifier(xml, "rename-to", true));
 		case "add-value":
-			return new SchemaMigration.AddValueMigration(migSet, xml.getNamePosition().getPosition(0), getIdentifier(xml, "enum"),
-				getIdentifier(xml, "value"));
+			return new SchemaMigration.AddValueMigration(migSet, xml.getNamePosition().getPosition(0), getIdentifier(xml, "enum", true),
+				getIdentifier(xml, "value", true));
 		case "remove-value":
-			return new SchemaMigration.RemoveValueMigration(migSet, xml.getNamePosition().getPosition(0), getIdentifier(xml, "enum"),
-				getIdentifier(xml, "value"));
+			return new SchemaMigration.RemoveValueMigration(migSet, xml.getNamePosition().getPosition(0), getIdentifier(xml, "enum", true),
+				getIdentifier(xml, "value", true));
 		case "rename-value":
-			return new SchemaMigration.RenameValueMigration(migSet, xml.getNamePosition().getPosition(0), getIdentifier(xml, "enum"),
-				getIdentifier(xml, "value"), getIdentifier(xml, "rename-to"));
+			return new SchemaMigration.RenameValueMigration(migSet, xml.getNamePosition().getPosition(0), getIdentifier(xml, "enum", true),
+				getIdentifier(xml, "value", true), getIdentifier(xml, "rename-to", true));
 		case "for-each":
 			String entity = xml.getAttribute("entity");
 			ConfigurableCustomMigrator<?> migrator = migrators.get(xml.getAttribute("migrator"));
@@ -198,12 +199,21 @@ public class MigrationPersistence {
 		}
 	}
 
-	private static String getIdentifier(StrictXmlReader xml, String attribute) throws TextParseException {
+	private static String getIdentifier(StrictXmlReader xml, String attribute, boolean required) throws TextParseException {
 		String text;
-		if (attribute != null)
-			text = xml.getAttribute(attribute);
-		else
-			text = xml.getTextTrim();
+		if (attribute != null) {
+			if (required)
+				text = xml.getAttribute(attribute);
+			else
+				text = xml.getAttributeIfExists(attribute);
+		} else {
+			if (required)
+				text = xml.getTextTrim();
+			else
+				text = xml.getTextTrimIfExists();
+		}
+		if (text == null)
+			return null;
 		if (!IDENTIFIER.matcher(text).matches()) {
 			if (attribute != null)
 				throw new TextParseException(
@@ -222,7 +232,7 @@ public class MigrationPersistence {
 		if (init != null)
 			affected.addAll(init);
 		for (StrictXmlReader entity : xml.getElements("affects"))
-			affected.add(getIdentifier(entity, null));
+			affected.add(getIdentifier(entity, null, true));
 		return Collections.unmodifiableSet(affected);
 	}
 
@@ -231,12 +241,12 @@ public class MigrationPersistence {
 		Map<String, Set<String>> requiredFields = new LinkedHashMap<>();
 		Set<String> entityFields = new LinkedHashSet<>();
 		for (StrictXmlReader requiredEntity : xml.getElements("required-entity")) {
-			String name = getIdentifier(requiredEntity, "name");
+			String name = getIdentifier(requiredEntity, "name", true);
 			if (requiredFields.containsKey(name))
 				throw new TextParseException("Duplicate required-entity '" + name + "'",
 					requiredEntity.getAttributeValuePosition("name").getPosition(0));
 			for (StrictXmlReader requiredField : requiredEntity.getElements("required-field")) {
-				String field = getIdentifier(requiredField, "name");
+				String field = getIdentifier(requiredField, "name", true);
 				if (requiredFields.containsKey(name))
 					throw new TextParseException("Duplicate required-field '" + field + " for required-entity '" + name + "'",
 						requiredField.getAttributeValuePosition("name").getPosition(0));
@@ -259,19 +269,32 @@ public class MigrationPersistence {
 
 	public static SchemaMigration.AddEntityMigration parseAddEntityMigration(StrictXmlReader xml, MigrationSet migSet)
 		throws TextParseException {
-		String entity = getIdentifier(xml, "name");
-		String superType = xml.getAttributeIfExists("super");
+		String entity = getIdentifier(xml, "name", true);
+		String superTypeStr = xml.getAttributeIfExists("super");
 		String idFieldsStr = xml.getAttributeIfExists("id");
-		if (superType != null) {
-			if (!IDENTIFIER.matcher(superType).matches())
-				throw new TextParseException("Attribute super must be an identifier: " + IDENTIFIER,
-					xml.getAttributeValuePosition("super").getPosition(0));
+		Set<String> supers;
+		if (superTypeStr != null) {
 			if (idFieldsStr != null)
 				throw new TextParseException("Entity types with a super type must inherit their super type's id",
 					xml.getAttributeValuePosition("id").getPosition(0));
-		} else if (idFieldsStr == null)
-			throw new TextParseException("New entity types must have either a super type or id fields",
-				xml.getNamePosition().getPosition(0));
+			supers = new LinkedHashSet<>();
+			for (String sup : superTypeStr.split(",")) {
+				sup = sup.trim();
+				if (!IDENTIFIER.matcher(sup).matches())
+					throw new TextParseException("Attribute super must be an identifier: " + IDENTIFIER,
+						xml.getAttributeValuePosition("super").getPosition(0));
+				supers.add(sup);
+			}
+			if (supers.isEmpty())
+				throw new TextParseException("Attribute super must be an identifier: " + IDENTIFIER,
+					xml.getAttributeValuePosition("super").getPosition(0));
+			supers = Collections.unmodifiableSet(supers);
+		} else {
+			supers = Collections.emptySet();
+			if (idFieldsStr == null)
+				throw new TextParseException("New entity types must have either a super type or id fields",
+					xml.getNamePosition().getPosition(0));
+		}
 
 		Map<String, SchemaMigration.AddFieldMigration> fields = new LinkedHashMap<>();
 		for (StrictXmlReader fieldXml : xml.getElements("field")) {
@@ -288,18 +311,63 @@ public class MigrationPersistence {
 			if (idFieldSplit.length == 0)
 				throw new TextParseException("add-entity.id cannot be empty", xml.getAttributeValuePosition("id").getPosition(0));
 			for (String id : idFieldSplit) {
-				if (!fields.containsKey(id))
+				SchemaMigration.AddFieldMigration field = fields.get(id);
+				if (field == null)
 					throw new TextParseException("ID field '" + id + "' not declared", xml.getAttributeValuePosition("id").getPosition(0));
+				else if (field.mappedReference != null)
+					throw new TextParseException("Mapped field '" + id + "' cannot be used as an ID field",
+						xml.getAttributeValuePosition("id").getPosition(0));
 			}
 			idFields = QommonsUtils.unmodifiableDistinctCopy(idFieldSplit);
 		} else
 			idFields = Collections.emptySet();
-		return new SchemaMigration.AddEntityMigration(migSet, xml.getNamePosition().getPosition(0), entity, superType, idFields,
+		return new SchemaMigration.AddEntityMigration(migSet, xml.getNamePosition().getPosition(0), entity, supers, idFields,
 			QommonsUtils.unmodifiableCopy(fields.values()));
 	}
 
 	private static SchemaMigration.AddFieldMigration parseAddFieldMigration(StrictXmlReader xml, MigrationSet migSet, String entity,
 		Map<String, ConfigurableCustomMigrator<?>> migrators) throws TextParseException {
+		String mappedReference = getIdentifier(xml, "mapped-reference", false);
+		String mapKey = getIdentifier(xml, "key", false);
+		String mapIndex = getIdentifier(xml, "index", false);
+		String mapSort = getIdentifier(xml, "sort-by", false);
+		String mappedEntityOwnerStr = xml.getAttributeIfExists("owns-target");
+		boolean ownsTarget;
+		if (mappedReference == null) {
+			if (mapKey != null)
+				throw new TextParseException("key cannot be specified if mapped-reference is not",
+					xml.getAttributeValuePosition("key").getPosition(0));
+			else if (mapIndex != null)
+				throw new TextParseException("index cannot be specified if mapped-reference is not",
+					xml.getAttributeValuePosition("index").getPosition(0));
+			else if (mapSort != null)
+				throw new TextParseException("sort-by cannot be specified if mapped-reference is not",
+					xml.getAttributeValuePosition("sort-by").getPosition(0));
+			else if (mappedEntityOwnerStr != null)
+				throw new TextParseException("owns-target cannot be specified if mapped-reference is not",
+					xml.getAttributeValuePosition("owns-target").getPosition(0));
+			ownsTarget = false;
+		} else {
+			if (mappedEntityOwnerStr == null)
+				ownsTarget = false;
+			else {
+				switch (mappedEntityOwnerStr.toLowerCase()) {
+				case "true":
+					ownsTarget = true;
+					break;
+				case "false":
+					ownsTarget = true;
+					break;
+				default:
+					throw new TextParseException("owns-target must be 'true' or 'false'",
+						xml.getAttributeValuePosition("owns-target").getPosition(0));
+				}
+			}
+			if (mapIndex != null && mapSort != null)
+				throw new TextParseException("index and sort-by cannot both be specified",
+					xml.getAttributeValuePosition("sort-by").getPosition(0));
+		}
+
 		String initValue = xml.getAttributeIfExists("init-value");
 		String initWith = xml.getAttributeIfExists("init-with");
 		if (migrators == null) { // Field declaration within an add-entity migration
@@ -322,18 +390,18 @@ public class MigrationPersistence {
 				throw new TextParseException("Migrator " + migrator + " is not an instance of " + EntityFieldInitializer.class.getName()
 					+ ", which is required to initialize field values", xml.getAttributeValuePosition("init-with").getPosition(0));
 		}
-		return new SchemaMigration.AddFieldMigration(migSet, xml.getNamePosition().getPosition(0), entity, xml.getAttribute("name"),
-			xml.getAttribute("type"), initValue, (ConfigurableCustomMigrator<EntityFieldInitializer>) migrator,
-			parseRequiredFields(xml, null));
+		return new SchemaMigration.AddFieldMigration(migSet, xml.getNamePosition().getPosition(0), entity, getIdentifier(xml, "name", true),
+			xml.getAttribute("type"), mappedReference, mapKey, mapIndex, mapSort, ownsTarget, initValue,
+			(ConfigurableCustomMigrator<EntityFieldInitializer>) migrator, parseRequiredFields(xml, null));
 	}
 
 	private static SchemaMigration.RemoveEntityMigration parseRemoveEntityMigration(StrictXmlReader xml, MigrationSet migSet,
 		Map<String, ConfigurableCustomMigrator<?>> migrators) throws TextParseException {
-		String entity = getIdentifier(xml, "name");
+		String entity = getIdentifier(xml, "name", true);
 		StrictXmlReader moveToXml = xml.getElementIfExists("move-to");
 		if (moveToXml == null)
 			return new SchemaMigration.RemoveEntityMigration(migSet, xml.getNamePosition().getPosition(0), entity, null);
-		String target = getIdentifier(moveToXml, "target");
+		String target = getIdentifier(moveToXml, "target", true);
 		ConfigurableCustomMigrator<?> migrator = migrators.get(xml.getAttribute("migrator"));
 		if (migrator == null)
 			throw new TextParseException("No such migrator found with ref-id '" + xml.getAttribute("migrator") + "'",
@@ -352,7 +420,7 @@ public class MigrationPersistence {
 		for (StrictXmlReader valueEl : xml.getElements("value")) {
 			initialValues.add(valueEl.getAttribute("name"));
 		}
-		return new SchemaMigration.AddEnumMigration(migSet, xml.getNamePosition().getPosition(0), getIdentifier(xml, "name"),
+		return new SchemaMigration.AddEnumMigration(migSet, xml.getNamePosition().getPosition(0), getIdentifier(xml, "name", true),
 			Collections.unmodifiableSet(initialValues));
 	}
 
@@ -434,15 +502,25 @@ public class MigrationPersistence {
 				for (EntityType entityType : dataTypes.getEntityTypes()) {
 					root.addChild("entity", entityXml -> {
 						entityXml.addAttribute("name", entityType.getName());
-						if (entityType.getSuperType() != null)
-							entityXml.addAttribute("super", entityType.getSuperType().getName());
-						else
+						if (entityType.getSuperTypes().isEmpty())
 							entityXml.addAttribute("id", StringUtils.print(",", entityType.getIdFields(), Named::getName).toString());
+						else
+							entityXml.addAttribute("super",
+								String.join(",", IterableUtils.map(entityType.getSuperTypes(), e -> e.getName())));
 						for (EntityField<?> field : entityType.getLocalFields()) {
 							entityXml.addChild("field", fieldXml -> {
 								fieldXml//
 								.addAttribute("name", field.getName())//
 								.addAttribute("type", field.getType().toString());
+								if (field.getMapping() != null) {
+									fieldXml.addAttribute("mapped-reference", field.getMapping().mappedReferenceField.getName());
+									if (field.getMapping().keyField != null)
+										fieldXml.addAttribute("key", field.getMapping().keyField.getName());
+									if (field.getMapping().indexField != null)
+										fieldXml.addAttribute("index", field.getMapping().indexField.getName());
+									if (field.getMapping().sortByField != null)
+										fieldXml.addAttribute("sort-by", field.getMapping().sortByField.getName());
+								}
 							});
 						}
 					});

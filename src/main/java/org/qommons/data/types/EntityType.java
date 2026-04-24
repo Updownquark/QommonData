@@ -1,28 +1,31 @@
 package org.qommons.data.types;
 
 import java.util.Set;
+import java.util.function.Function;
 
 import org.qommons.Named;
 import org.qommons.StringUtils;
+import org.qommons.collect.BetterHashSet;
+import org.qommons.collect.BetterSet;
 import org.qommons.collect.BetterSortedList.SortedSearchFilter;
 import org.qommons.collect.BetterSortedSet;
+import org.qommons.collect.CollectionElement;
 import org.qommons.collect.DequeList;
 import org.qommons.data.values.GenericEntity;
 
 public interface EntityType extends Named, EntityReferent<GenericEntity> {
 	EntityTypeSet getTypeSet();
 
-	EntityType getSuperType();
+	BetterSet<? extends EntityType> getSuperTypes();
 
 	default EntityType getRootType() {
-		EntityType type = this;
-		while (true) {
-			EntityType superType = type.getSuperType();
-			if (superType == null)
-				return type;
-			else
-				type = superType;
+		EntityType t = this;
+		EntityType sup = t.getSuperTypes().peekFirst();
+		while (sup != null) {
+			t = sup;
+			sup = sup.getSuperTypes().peekFirst();
 		}
+		return t;
 	}
 
 	@Override
@@ -56,10 +59,39 @@ public interface EntityType extends Named, EntityReferent<GenericEntity> {
 	default boolean isAssignableFrom(FieldType<?> other) {
 		if (getClass() != other.getClass())
 			return false;
+		BetterSet<EntityType> visited = null; // Used only for multi-inheritance
 		EntityType et = (EntityType) other;
-		while (et != null && et != this)
-			et = et.getSuperType();
-		return et != null;
+		while (et != null && et != this) {
+			if (et.getSuperTypes().size() > 1) {
+				if (et.getSuperTypes().contains(this))
+					return true;
+				for (EntityType sup : et.getSuperTypes()) {
+					if (!sup.getSuperTypes().isEmpty()) {
+						if (visited == null)
+							visited = BetterHashSet.create();
+						visited.addAll(sup.getSuperTypes());
+					}
+				}
+				et = null;
+				break;
+			} else
+				et = et.getSuperTypes().peekFirst();
+		}
+		if (et != null)
+			return true;
+		else if (visited != null) {
+			for (CollectionElement<EntityType> sup = visited.getTerminalElement(true); sup != null; sup = sup.getAdjacent(true)) {
+				if (sup.get() == this)
+					return true;
+				visited.addAll(sup.get().getSuperTypes());
+			}
+		}
+		return false;
+	}
+
+	@Override
+	default <FT extends FieldType<?>> FT containsTypeLike(Function<? super FieldType<?>, FT> test) {
+		return test.apply(this);
 	}
 
 	BetterSortedSet<? extends EntityField<?>> getLocalFields();
