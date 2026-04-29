@@ -21,7 +21,7 @@ public class FieldMapping<F, K, S> {
 		this.keyField = keyField;
 		this.indexField = indexField;
 		this.sortByField = sortByField;
-		entitySort = sortByField == null ? null : new EntityFieldSort<>(sortByField);
+		entitySort = sortByField == null ? mappedReferenceField.getOwner() : new EntityFieldSort<>(sortByField);
 		this.parentIsOwner = parentIsOwner;
 	}
 
@@ -42,13 +42,24 @@ public class FieldMapping<F, K, S> {
 			&& Objects.equals(sortByField, other.sortByField);
 	}
 
+	public StringBuilder append(StringBuilder str) {
+		str.append(mappedReferenceField.getName());
+		if (keyField != null)
+			str.append('[').append(keyField.getName()).append(']');
+		if (indexField != null)
+			str.append('[').append(indexField.getName()).append(']');
+		if (sortByField != null)
+			str.append('[').append(sortByField.getName()).append(']');
+		return str;
+	}
+
 	@Override
 	public String toString() {
 		StringBuilder str = new StringBuilder();
 		str.append(parentField.toString()).append(" (by ");
 		if (keyField != null)
 			str.append(keyField.getName()).append('/');
-		str.append(mappedReferenceField.getName());
+		str.append(mappedReferenceField.getName()).append(')');
 		if (indexField != null)
 			str.append('[').append(indexField.getName()).append(']');
 		if (sortByField != null)

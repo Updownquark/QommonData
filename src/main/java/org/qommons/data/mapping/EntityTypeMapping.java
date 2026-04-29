@@ -4,6 +4,7 @@ import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.util.Comparator;
 import java.util.Map;
+import java.util.function.Consumer;
 
 import org.qommons.Named;
 import org.qommons.collect.DequeList;
@@ -20,13 +21,14 @@ public class EntityTypeMapping<E> implements Named {
 	private final Class<E> theRealType;
 	private final DequeList<EntityFieldMapping<?, ?>> theFields;
 	private final DequeList<EntityFieldMapping<?, ?>> theIdFields;
-	private final EntitySort<? super E> theSorting;
+	private EntitySort<? super E> theSorting;
 
 	public EntityTypeMapping(EntityTypeSetMapping typeSet, EntityType genericType, Class<E> realType,
-		Map<String, EntityFieldMapping<?, ?>> fields) {
+		Map<String, EntityFieldMapping<?, ?>> fields, Consumer<? super EntityTypeMapping<E>> configure) {
 		theTypeSet = typeSet;
 		theGenericType = genericType;
 		theRealType = realType;
+		configure.accept(this);
 		EntityFieldMapping<?, ?>[] allFields = new EntityFieldMapping[genericType.getFields().size()];
 		int f = 0;
 		for (EntityField<?> field : genericType.getFields())
@@ -37,9 +39,14 @@ public class EntityTypeMapping<E> implements Named {
 			idFields[f++] = allFields[genericType.indexOf(field)];
 		theFields = DequeList.of(allFields);
 		theIdFields = DequeList.of(idFields);
-		FieldSort<? super E, ?>[] fieldSorting = new FieldSort[idFields.length];
-		for (int i = 0; i < idFields.length; i++)
-			fieldSorting[i] = createSorting(idFields[i], typeSet);
+	}
+
+	void init() {
+		for (EntityFieldMapping<?, ?> field : theFields)
+			field.init();
+		FieldSort<? super E, ?>[] fieldSorting = new FieldSort[theIdFields.size()];
+		for (int i = 0; i < theIdFields.size(); i++)
+			fieldSorting[i] = createSorting(theIdFields.get(i), theTypeSet);
 		theSorting = new EntitySortImpl<>(fieldSorting);
 	}
 
@@ -88,6 +95,11 @@ public class EntityTypeMapping<E> implements Named {
 		for (int i = 0; i < id.length; i++)
 			id[i] = theIdFields.get(i).getGetter().invoke(entity);
 		return id;
+	}
+
+	@Override
+	public String toString() {
+		return theGenericType.getName();
 	}
 
 	private static <E, F> FieldSort<? super E, ?> createSorting(EntityFieldMapping<?, F> type, EntityTypeSetMapping types) {

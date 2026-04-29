@@ -2,7 +2,9 @@ package org.qommons.data.types;
 
 import java.time.Duration;
 import java.time.Instant;
-import java.time.OffsetDateTime;
+import java.time.LocalDateTime;
+import java.time.ZoneId;
+import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
 import java.util.Collection;
@@ -14,7 +16,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.function.Function;
-import java.util.function.Supplier;
+import java.util.function.IntFunction;
 
 import org.qommons.StringUtils;
 import org.qommons.TimeUtils;
@@ -105,24 +107,30 @@ public interface FieldType<F> extends Comparator<F> {
 			return (SimpleType<T>) SIMPLE_TYPES.get(type);
 		}
 
-		public static final SimpleType<Boolean> BOOLEAN = add(new SimpleType<>(Boolean.class), boolean.class);
-		public static final SimpleType<Character> CHAR = add(new SimpleType<>(Character.class), char.class);
-		public static final SimpleType<Byte> BYTE = add(new SimpleType<>(Byte.class), byte.class);
-		public static final SimpleType<Short> SHORT = add(new SimpleType<>(Short.class), short.class);
-		public static final SimpleType<Integer> INT = add(new SimpleType<>(Integer.class), int.class);
-		public static final SimpleType<Long> LONG = add(new SimpleType<>(Long.class), long.class);
-		public static final SimpleType<Float> FLOAT = add(new SimpleType<>(Float.class), float.class);
-		public static final SimpleType<Double> DOUBLE = add(new SimpleType<>(Double.class), double.class);
-		public static final SimpleType<String> STRING = add(new SimpleType<>(String.class), null);
-		public static final SimpleType<Instant> INSTANT = add(new SimpleType<>(Instant.class), null);
-		public static final SimpleType<Duration> DURATION = add(new SimpleType<>(Duration.class), null);
+		public static final SimpleType<Boolean> BOOLEAN = new SimpleType<>(Boolean.class, boolean.class);
+		public static final SimpleType<Character> CHAR = new SimpleType<>(Character.class, char.class);
+		public static final SimpleType<Byte> BYTE = new SimpleType<>(Byte.class, byte.class);
+		public static final SimpleType<Short> SHORT = new SimpleType<>(Short.class, short.class);
+		public static final SimpleType<Integer> INT = new SimpleType<>(Integer.class, int.class);
+		public static final SimpleType<Long> LONG = new SimpleType<>(Long.class, long.class);
+		public static final SimpleType<Float> FLOAT = new SimpleType<>(Float.class, float.class);
+		public static final SimpleType<Double> DOUBLE = new SimpleType<>(Double.class, double.class);
+		public static final SimpleType<String> STRING = new SimpleType<>(String.class, null);
+		public static final SimpleType<Instant> INSTANT = new SimpleType<>(Instant.class, null);
+		public static final SimpleType<Duration> DURATION = new SimpleType<>(Duration.class, null);
 
-		private static final DateTimeFormatter INSTANT_FORMAT = DateTimeFormatter.ofPattern("yyyy/MM/dd HH:mm:ss[.nnnnnnnnn]");
+		private static final DateTimeFormatter INSTANT_FORMAT = DateTimeFormatter.ofPattern("yyyy/MM/dd HH:mm:ss[.nnnnnnnnn]")//
+			.withZone(ZoneId.of("GMT"));
 
 		public final Class<F> type;
+		public final Class<F> primitiveType;
 
-		private SimpleType(Class<F> type) {
+		private SimpleType(Class<F> type, Class<F> primitive) {
 			this.type = type;
+			this.primitiveType = primitive;
+			SIMPLE_TYPES.put(type, this);
+			if (primitive != null)
+				SIMPLE_TYPES.put(primitive, this);
 		}
 
 		@Override
@@ -196,7 +204,7 @@ public interface FieldType<F> extends Comparator<F> {
 			return test.apply(this);
 		}
 
-		public F parse(String text, Supplier<FilePosition> source) throws MigrationException {
+		public F parse(String text, IntFunction<FilePosition> source) throws MigrationException {
 			if (this == BOOLEAN) {
 				switch (text) {
 				case "true":
@@ -206,11 +214,11 @@ public interface FieldType<F> extends Comparator<F> {
 				case "FALSE":
 					return (F) Boolean.FALSE;
 				default:
-					throw new MigrationException("Expected 'true' or 'false', not '" + text + "'", source.get());
+					throw new MigrationException("Expected 'true' or 'false', not '" + text + "'", source.apply(0));
 				}
 			} else if (this == CHAR) {
 				if (text.length() != 1)
-					throw new MigrationException("Expected a single character", source.get());
+					throw new MigrationException("Expected a single character", source.apply(0));
 				return (F) Character.valueOf(text.charAt(0));
 			} else if (this == STRING) {
 				return (F) text;
@@ -218,50 +226,51 @@ public interface FieldType<F> extends Comparator<F> {
 				try {
 					return (F) Byte.valueOf(text);
 				} catch (NumberFormatException e) {
-					throw new MigrationException("Could not parse byte from '" + text + "'", source.get(), e);
+					throw new MigrationException("Could not parse byte from '" + text + "'", source.apply(0), e);
 				}
 			} else if (this == SHORT) {
 				try {
 					return (F) Short.valueOf(text);
 				} catch (NumberFormatException e) {
-					throw new MigrationException("Could not parse short from '" + text + "'", source.get(), e);
+					throw new MigrationException("Could not parse short from '" + text + "'", source.apply(0), e);
 				}
 			} else if (this == INT) {
 				try {
 					return (F) Integer.valueOf(text);
 				} catch (NumberFormatException e) {
-					throw new MigrationException("Could not parse int from '" + text + "'", source.get(), e);
+					throw new MigrationException("Could not parse int from '" + text + "'", source.apply(0), e);
 				}
 			} else if (this == LONG) {
 				try {
 					return (F) Long.valueOf(text);
 				} catch (NumberFormatException e) {
-					throw new MigrationException("Could not parse long from '" + text + "'", source.get(), e);
+					throw new MigrationException("Could not parse long from '" + text + "'", source.apply(0), e);
 				}
 			} else if (this == FLOAT) {
 				try {
 					return (F) Float.valueOf(text);
 				} catch (NumberFormatException e) {
-					throw new MigrationException("Could not parse float from '" + text + "'", source.get(), e);
+					throw new MigrationException("Could not parse float from '" + text + "'", source.apply(0), e);
 				}
 			} else if (this == DOUBLE) {
 				try {
 					return (F) Double.valueOf(text);
 				} catch (NumberFormatException e) {
-					throw new MigrationException("Could not parse double from '" + text + "'", source.get(), e);
+					throw new MigrationException("Could not parse double from '" + text + "'", source.apply(0), e);
 				}
 			} else if (this == INSTANT) {
 				try {
-					return (F) OffsetDateTime.parse(text, INSTANT_FORMAT).toInstant();
+					LocalDateTime localTime = LocalDateTime.from(INSTANT_FORMAT.parse(text));
+					return (F) localTime.atOffset(ZoneOffset.UTC).toInstant();
 				} catch (DateTimeParseException e) {
-					throw new MigrationException("Could not parse instant from '" + text + "'", source.get(), e);
+					throw new MigrationException("Could not parse instant from '" + text + "'", source.apply(0), e);
 				}
 			} else if (this == DURATION) {
 				double seconds;
 				try {
 					seconds = Double.parseDouble(text);
 				} catch (NumberFormatException e) {
-					throw new MigrationException("Could not parse double from '" + text + "'", source.get(), e);
+					throw new MigrationException("Could not parse double from '" + text + "'", source.apply(0), e);
 				}
 				return (F) TimeUtils.ofSeconds(seconds);
 			} else {
@@ -290,7 +299,10 @@ public interface FieldType<F> extends Comparator<F> {
 
 		@Override
 		public String toString() {
-			return type.toString();
+			if (primitiveType != null)
+				return primitiveType.getName();
+			else
+				return type.getSimpleName();
 		}
 	}
 
@@ -320,6 +332,8 @@ public interface FieldType<F> extends Comparator<F> {
 			return null;
 		}
 
+		ParameterizedType<F> map(Function<? super FieldType<?>, ? extends FieldType<?>> map);
+
 		F createEmptyStructure();
 	}
 
@@ -328,10 +342,10 @@ public interface FieldType<F> extends Comparator<F> {
 		public final boolean isSorted;
 		public final boolean isDistinct;
 
-		public CollectionType(FieldType<E> componentType, boolean isSorted, boolean isDistinct) {
+		public CollectionType(FieldType<E> componentType, boolean sorted, boolean distinct) {
 			this.componentType = componentType;
-			this.isSorted = isSorted;
-			this.isDistinct = isDistinct;
+			this.isSorted = sorted;
+			this.isDistinct = distinct;
 		}
 
 		@Override
@@ -427,6 +441,12 @@ public interface FieldType<F> extends Comparator<F> {
 			for (Object v : (Collection<?>) value)
 				newValue.add(componentType.convert(v, ct.componentType));
 			return null;
+		}
+
+		@Override
+		public ParameterizedType<C> map(Function<? super FieldType<?>, ? extends FieldType<?>> map) {
+			FieldType<E> newCT = (FieldType<E>) map.apply(componentType);
+			return newCT == componentType ? this : new CollectionType<>(newCT, isSorted, isDistinct);
 		}
 
 		@Override
@@ -551,6 +571,16 @@ public interface FieldType<F> extends Comparator<F> {
 				newValue.put(keyType.convert(entry.getKey(), mt.keyType), valueType.convert(entry.getValue(), mt.valueType));
 			}
 			return newValue;
+		}
+
+		@Override
+		public ParameterizedType<M> map(Function<? super FieldType<?>, ? extends FieldType<?>> map) {
+			FieldType<K> newKT = (FieldType<K>) map.apply(keyType);
+			FieldType<V> newVT = (FieldType<V>) map.apply(valueType);
+			if (newKT == keyType && newVT == valueType)
+				return this;
+			else
+				return new MapType<>(keyType, valueType, isSorted);
 		}
 
 		@Override
@@ -708,6 +738,16 @@ public interface FieldType<F> extends Comparator<F> {
 				}
 				return newValue;
 			}
+		}
+
+		@Override
+		public ParameterizedType<M> map(Function<? super FieldType<?>, ? extends FieldType<?>> map) {
+			FieldType<K> newKT = (FieldType<K>) map.apply(keyType);
+			FieldType<V> newVT = (FieldType<V>) map.apply(valueType);
+			if (newKT == keyType && newVT == valueType)
+				return this;
+			else
+				return new MultiMapType<>(keyType, valueType, isSorted);
 		}
 
 		@Override

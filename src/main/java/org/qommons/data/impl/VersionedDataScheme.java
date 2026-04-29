@@ -2,6 +2,7 @@ package org.qommons.data.impl;
 
 import java.io.BufferedWriter;
 import java.io.IOException;
+import java.io.OutputStream;
 import java.io.OutputStreamWriter;
 import java.io.Writer;
 import java.lang.reflect.InvocationTargetException;
@@ -9,7 +10,10 @@ import java.nio.charset.StandardCharsets;
 import java.text.ParseException;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.LocalDateTime;
 import java.time.OffsetDateTime;
+import java.time.ZoneId;
+import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
 import java.util.Collection;
@@ -20,6 +24,8 @@ import java.util.Map;
 import java.util.NavigableMap;
 import java.util.Set;
 import java.util.TreeMap;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import org.qommons.ClassMap.TypeMatch;
 import org.qommons.IterableUtils;
@@ -61,8 +67,9 @@ import org.qommons.threading.QommonsTimer;
 import org.qommons.tree.BetterTreeSet;
 
 public class VersionedDataScheme {
-	public static final String VERSION_DIR_PATTERN = "YYYYMMDD_HHmmss";
-	public static final DateTimeFormatter VERSION_DIR_FORMAT = DateTimeFormatter.ofPattern(VERSION_DIR_PATTERN);
+	public static final String VERSION_DIR_PATTERN = "yyyyMMdd_HHmmss";
+	public static final DateTimeFormatter VERSION_DIR_FORMAT = DateTimeFormatter.ofPattern(VERSION_DIR_PATTERN)//
+		.withZone(ZoneId.of("GMT"));
 	private static final Duration ONE_SECOND = Duration.ofSeconds(1);
 	public static final String MIGRATION_STORE = "Applied Migrations.csv";
 	public static final String DATA_SCHEMA = "Entity Schema.xml";
@@ -81,6 +88,14 @@ public class VersionedDataScheme {
 			PersistedEntitySet data = parseCurrentData(rootDataDirectory, mappedEntityTypes.getGenericTypes(), migrations, initDataDir,
 				persistence);
 			return new LoadedGenericData(mappedEntityTypes, data.entityData, data.persistenceDir);
+		}
+
+		public RollingEntitySetPersistence createPersister(BetterFile rootDataDirectory, EntitySetPersistence persistence)
+			throws IOException {
+			BetterFile persistenceDir = rootDataDirectory.at(VERSION_DIR_FORMAT.format(migrations.getLast().date));
+			if (!persistenceDir.isDirectory())
+				persistenceDir.create(true);
+			return new RollingEntitySetPersistence(mappedEntityTypes.getGenericTypes(), persistenceDir, persistence, true);
 		}
 	}
 
@@ -185,7 +200,9 @@ public class VersionedDataScheme {
 		}
 
 		private <X extends Exception> void forAllDataSetFiles(DataSetFileAction<X> forEach) throws X {
-			forAllDataSetFiles(persistenceDir, new StringBuilder(), forEach, true);
+			StringBuilder path = new StringBuilder();
+			for (BetterFile file : persistenceDir.listFiles())
+				forAllDataSetFiles(file, path, forEach, true);
 		}
 
 		private <X extends Exception> void forAllDataSetFiles(BetterFile file, StringBuilder path, DataSetFileAction<X> forEach,
@@ -193,12 +210,12 @@ public class VersionedDataScheme {
 			int preLen = path.length();
 			if (file.isFile()) {
 				if (root && (file.getName().equals(MIGRATION_STORE) || file.getName().equals(DATA_SCHEMA))) {
-					path.append(file);
+					path.append(file.getName());
 					forEach.forDataSetFile(file, path);
 				} else {
 					try {
-						if (thePersistence.mayBePersistedData(file)) {
-							path.append(file);
+						if (thePersistence.mayBePersistedData(file, entityTypes)) {
+							path.append(file.getName());
 							forEach.forDataSetFile(file, path);
 						}
 					} catch (IOException | TextParseException e) {
@@ -211,6 +228,15 @@ public class VersionedDataScheme {
 					forAllDataSetFiles(sub, path, forEach, false);
 			}
 			path.setLength(preLen);
+		}
+
+		public RollingEntitySetPersistence saveSchema(Collection<? extends MigrationSetDef> migrations) throws IOException {
+			BetterFile schemaFile = persistenceDir.at(DATA_SCHEMA);
+			try (OutputStream out = schemaFile.write()) {
+				MigrationPersistence.writeSchema(entityTypes, schemaFile);
+			}
+			writeMigrations(migrations, persistenceDir);
+			return this;
 		}
 
 		public long save(GenericEntitySet entities, Iterable<? extends EntityType> onlyTypes, PersistenceMonitor monitor)
@@ -482,7 +508,8 @@ public class VersionedDataScheme {
 
 			@Override
 			public void delete(BetterFile backup) throws IOException {
-				backup.delete(null);
+				if (backup != persistenceDir)
+					backup.delete(null);
 			}
 		}
 	}
@@ -525,45 +552,52 @@ public class VersionedDataScheme {
 		} catch (EntityTypeSetMapping.TypeSetMappingException e) {
 			throw new MigrationException(
 				e.diff.print(new StringBuilder("The entity classes in code are incompatible with the documented schema:\n")).toString(),
-				null);
+				null, e);
 		}
 		return new InitializedDataScheme(mapping, migrations);
 	}
+
+	private static final Pattern US_SUFFIX = Pattern.compile("(?<content>.{" + VERSION_DIR_PATTERN.length() + "})_\\d+");
 
 	public static PersistedEntitySet parseCurrentData(BetterFile rootDataDirectory, EntityTypeSet codeTypes,
 		BetterSortedSet<MigrationSet> migrations, BetterFile initDataDir, EntitySetPersistence persistence)
 			throws IOException, DataSetMigrationException {
 		NavigableMap<Instant, BetterFile> versionDirs = new TreeMap<>();
 		for (BetterFile dir : rootDataDirectory.listFiles()) {
-			if (dir.isFile() || dir.getName().length() != VERSION_DIR_PATTERN.length()) // Don't read archives
+			if (dir.isFile()) // Don't read archives
 				continue;
+			String dirTimeStr = dir.getName();
+			Matcher suffix = US_SUFFIX.matcher(dirTimeStr);
+			if (suffix.matches())
+				dirTimeStr = suffix.group("content");
 			Instant dirTime;
 			try {
-				dirTime = OffsetDateTime.parse(dir.getName(), VERSION_DIR_FORMAT).toInstant();
+				LocalDateTime localTime = LocalDateTime.parse(dirTimeStr, VERSION_DIR_FORMAT);
+				dirTime = localTime.atOffset(ZoneOffset.UTC).toInstant();
 				versionDirs.put(dirTime, dir);
 			} catch (DateTimeParseException e) { // No worries, just a non-data directory
+				e.printStackTrace(); // TODO DELETE ME
 			}
 		}
 		String targetDirName = VERSION_DIR_FORMAT.format(migrations.getLast().date);
-		BetterFile newDataDirName = rootDataDirectory.at(targetDirName);
-		if (newDataDirName.exists()) {
+		BetterFile newDataDir = rootDataDirectory.at(targetDirName);
+		if (newDataDir.exists()) {
 			int suffix = 1;
 			do {
 				suffix++;
-				newDataDirName = rootDataDirectory.at(targetDirName + "_" + suffix);
-			} while (newDataDirName.exists());
+				newDataDir = rootDataDirectory.at(targetDirName + "_" + suffix);
+			} while (newDataDir.exists());
 		}
 		PersistedEntitySet currentData = null;
 		for (Map.Entry<Instant, BetterFile> versionDir : versionDirs.descendingMap().entrySet()) {
 			if (TimeUtils.between(versionDir.getKey(), migrations.getLast().date).compareTo(ONE_SECOND) < 0) {
 				// See if this data dir is up-to-date or can be migrated
-				currentData = tryToUseDir(versionDir.getValue(), true, newDataDirName, codeTypes, migrations, persistence);
+				currentData = tryToUseDir(versionDir.getValue(), true, newDataDir, codeTypes, migrations, persistence);
 				if (currentData != null)
 					break;
 			}
 		}
 		if (currentData == null) {
-			BetterFile newDataDir = rootDataDirectory.at(targetDirName);
 			if (initDataDir != null)
 				currentData = tryToUseDir(initDataDir, false, newDataDir, codeTypes, migrations, persistence);
 			if (currentData == null) { // No data to load
@@ -580,7 +614,9 @@ public class VersionedDataScheme {
 		EntityTypeSet codeTypes, BetterSortedSet<MigrationSet> migrations, EntitySetPersistence persistence)
 			throws IOException, DataSetMigrationException {
 		MigratedDataSet dataSet = readDataDirectory(sourceDataDir, codeTypes, migrations, persistence);
-		if (writable && dataSet.migrationResults == null) {
+		if (dataSet == null)
+			return null;
+		else if (writable && dataSet.migrationResults == null) {
 			// The data was up-to-date and didn't need migration, so we can use it out-of-the-box and persist to the same place.
 			return new PersistedEntitySet(sourceDataDir, dataSet.entityData);
 		} else {
@@ -620,7 +656,7 @@ public class VersionedDataScheme {
 			.with("author", false, ExFunction.identity())//
 			.with("date", false, (str, p) -> {
 				try {
-					return OffsetDateTime.parse(str, VERSION_DIR_FORMAT).toInstant();
+					return MigrationPersistence.parseMigrationTime(str);
 				} catch (DateTimeParseException e) { // No worries, just a non-data directory
 					throw new ParseException("Could not parse " + p.getColumnName(1) + " as a date", p.getPosition(1).getPosition());
 				}
@@ -680,6 +716,11 @@ public class VersionedDataScheme {
 		if (!directory.isDirectory())
 			directory.create(true);
 		MigrationPersistence.writeSchema(dataSet.getTypes(), directory.at(DATA_SCHEMA));
+		writeMigrations(migrations, directory);
+		persistence.persist(dataSet, directory);
+	}
+
+	public static void writeMigrations(Collection<? extends MigrationSetDef> migrations, BetterFile directory) throws IOException {
 		try (Writer out = new BufferedWriter(new OutputStreamWriter(directory.at(MIGRATION_STORE).write(), StandardCharsets.UTF_8))) {
 			out.write("Author,Date,Description\n");
 			for (MigrationSetDef migration : migrations) {
@@ -691,7 +732,6 @@ public class VersionedDataScheme {
 				out.write('\n');
 			}
 		}
-		persistence.persist(dataSet, directory);
 	}
 
 	public static class EntitySetGenerifier {

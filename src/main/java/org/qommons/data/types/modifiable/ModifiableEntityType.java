@@ -6,6 +6,7 @@ import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
 
+import org.qommons.IterableUtils;
 import org.qommons.Named;
 import org.qommons.StringUtils;
 import org.qommons.collect.BetterCollections;
@@ -91,7 +92,7 @@ public class ModifiableEntityType implements EntityType {
 		int f = 0;
 		for (Map.Entry<String, FieldType<?>> field : id.entrySet()) {
 			try {
-				idFieldArray[f++] = addField(field.getKey(), field.getValue(), null, source);
+				idFieldArray[f++] = addField(field.getKey(), field.getValue(), null, true, source);
 			} catch (MigrationException e) {
 				for (ModifiableEntityField<?> f2 : theLocalFields)
 					f2.delete();
@@ -105,7 +106,10 @@ public class ModifiableEntityType implements EntityType {
 		theReferences = BetterTreeMultiMap.create(Named.DISTINCT_NUMBER_TOLERANT,
 			b -> b.withSortedValues(Named.DISTINCT_NUMBER_TOLERANT, true));
 		theUnmodifiable = new Unmodifiable(this);
-		theFieldIndexes = null;
+		theFieldIndexes = new HashMap<>();
+		f = 0;
+		for (ModifiableEntityField<?> field : allFields)
+			theFieldIndexes.put(field, f++);
 	}
 
 	@Override
@@ -225,6 +229,11 @@ public class ModifiableEntityType implements EntityType {
 
 	public <F> ModifiableEntityField<F> addField(String name, FieldType<F> type, FieldMappingPrecursor<?, ?> mapping, FilePosition source)
 		throws MigrationException {
+		return addField(name, type, mapping, false, source);
+	}
+
+	public <F> ModifiableEntityField<F> addField(String name, FieldType<F> type, FieldMappingPrecursor<?, ?> mapping, boolean id,
+		FilePosition source) throws MigrationException {
 		checkNewField(name, source, null);
 		if (type == FieldType.SELF)
 			type = (FieldType<F>) this;
@@ -238,7 +247,7 @@ public class ModifiableEntityType implements EntityType {
 				throw new MigrationException("Mapped index field " + mapping.indexField.getOwner() + "." + mapping.indexField.getName()
 				+ " is already the index for " + mapping.indexField.getIndexReference().parentField, source);
 		}
-		ModifiableEntityField<F> field = new ModifiableEntityField<>(this, name, type, false, mapping, source);
+		ModifiableEntityField<F> field = new ModifiableEntityField<>(this, name, type, id, mapping, source);
 		addLocalField(field);
 		for (ModifiableEntityType subType : theSubTypes)
 			subType.addInheritedField(field);
@@ -260,7 +269,7 @@ public class ModifiableEntityType implements EntityType {
 	}
 
 	private void regenFieldIndexes(ListElement<ModifiableEntityField<?>> start) {
-		if (start == null)
+		if (start == null || theFieldIndexes == null) // indexes is null if initializing
 			return;
 		int index = start.getElementsBefore();
 		for (; start != null; start = start.getAdjacent(true))
@@ -333,6 +342,24 @@ public class ModifiableEntityType implements EntityType {
 		}
 	}
 
+	public StringBuilder append(StringBuilder str, int indent) {
+		str.append(theName);
+		if (!theSuperTypes.isEmpty()) {
+			str.append(" extends ");
+			boolean first = true;
+			for (ModifiableEntityType superT : theSuperTypes) {
+				if (first)
+					first = false;
+				else
+					str.append(", ");
+				str.append(superT.getName());
+			}
+		}
+		for (ModifiableEntityField<?> field : theLocalFields)
+			field.append(StringUtils.indent(str.append('\n'), indent + 1));
+		return str;
+	}
+
 	@Override
 	public String toString() {
 		return theName;
@@ -351,32 +378,24 @@ public class ModifiableEntityType implements EntityType {
 		Unmodifiable(ModifiableEntityType source) {
 			theSource = source;
 			theTypeSet = source.getTypeSet().unmodifiableView();
-			theLocalFields = new MappedBetterSortedSet<>(source.theLocalFields, ModifiableEntityField::unmodifiableView, null,
-				Named.DISTINCT_NUMBER_TOLERANT);
+			theLocalFields = BetterCollections.unmodifiableSortedSet(new MappedBetterSortedSet<>(source.theLocalFields,
+				ModifiableEntityField::unmodifiableView, null, Named.DISTINCT_NUMBER_TOLERANT));
+			theIdFields = DequeList.of(IterableUtils.map(source.theIdFields, ModifiableEntityField::unmodifiableView));
 			if (source.getSuperTypes().isEmpty()) {
 				theSuperTypes = BetterSet.empty();
-				theIdFields = DequeList.of(source.theIdFields.getFirst().unmodifiableView());
 				allFields = theLocalFields;
 			} else {
-				theSuperTypes = new MappedBetterSet<>(source.theSuperTypes, ModifiableEntityType::unmodifiableView,
-					test -> theSource.theSuperTypes.contains(((Unmodifiable) test).theSource),
-					v -> v == null ? null : ((Unmodifiable) v).theSource);
-				if (source.theIdFields.size() == 1)
-					theIdFields = source.getSuperTypes().getFirst().unmodifiableView().getIdFields();
-				else {
-					EntityField<?>[] idFields = new EntityField[source.theIdFields.size()];
-					int f = 0;
-					for (ModifiableEntityField<?> field : source.theIdFields)
-						idFields[f++] = field.unmodifiableView();
-					theIdFields = DequeList.of(BetterHashSet.build().build(idFields));
-				}
-				allFields = new MappedBetterSortedSet<>(source.allFields, ModifiableEntityField::unmodifiableView, null,
-					Named.DISTINCT_NUMBER_TOLERANT);
+				theSuperTypes = BetterCollections.unmodifiableSet(new MappedBetterSet<>(source.theSuperTypes,
+					ModifiableEntityType::unmodifiableView, test -> theSource.theSuperTypes.contains(((Unmodifiable) test).theSource),
+					v -> v == null ? null : ((Unmodifiable) v).theSource));
+				allFields = BetterCollections.unmodifiableSortedSet(new MappedBetterSortedSet<>(source.allFields,
+					ModifiableEntityField::unmodifiableView, null, Named.DISTINCT_NUMBER_TOLERANT));
 			}
-			theSubTypes = new MappedSet<>(source.theSubTypes, ModifiableEntityType::unmodifiableView,
-				test -> theSource.theSubTypes.contains(((Unmodifiable) test).theSource));
-			theReferrers = new MappedSet<>(source.theReferences.keySet(), ModifiableEntityType::unmodifiableView,
-				test -> theSource.theReferences.keySet().contains(((Unmodifiable) test).theSource));
+			theSubTypes = Collections.unmodifiableSet(new MappedSet<>(source.theSubTypes, ModifiableEntityType::unmodifiableView,
+				test -> theSource.theSubTypes.contains(((Unmodifiable) test).theSource)));
+			theReferrers = Collections
+				.unmodifiableSet(new MappedSet<>(source.theReferences.keySet(), ModifiableEntityType::unmodifiableView,
+					test -> theSource.theReferences.keySet().contains(((Unmodifiable) test).theSource)));
 		}
 
 		ModifiableEntityType getSource() {
@@ -434,6 +453,11 @@ public class ModifiableEntityType implements EntityType {
 				.get(((Unmodifiable) type).theSource);
 			return new MappedSet<>(refs, ModifiableEntityField::unmodifiableView,
 				test -> refs.contains(((ModifiableEntityField.Unmodifiable<?>) test).getSource()));
+		}
+
+		@Override
+		public String toString() {
+			return theSource.toString();
 		}
 	}
 }

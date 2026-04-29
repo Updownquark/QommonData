@@ -7,6 +7,8 @@ import java.util.Iterator;
 import java.util.Map;
 
 import org.qommons.IterableUtils;
+import org.qommons.Transactable;
+import org.qommons.Transaction;
 import org.qommons.collect.BetterMultiMap;
 import org.qommons.collect.MultiEntryHandle;
 import org.qommons.data.types.EntityField;
@@ -17,7 +19,7 @@ import org.qommons.data.types.EnumValue;
 import org.qommons.data.types.FieldType;
 import org.qommons.ex.CheckedExceptionWrapper;
 
-public interface GenericEntitySet {
+public interface GenericEntitySet extends Transactable {
 	EntityTypeSet getTypes();
 
 	Iterable<GenericEntity> getEntities(String typeName) throws IllegalArgumentException, IOException;
@@ -31,7 +33,9 @@ public interface GenericEntitySet {
 	GenericEntity createEntity(String typeName, Object... ids);
 
 	static void copy(GenericEntitySet source, GenericEntitySet dest) throws IOException {
-		Copying.copy(source, dest);
+		try (Transaction t = dest.lock(true, null)) {
+			Copying.copy(source, dest);
+		}
 	}
 
 	static class Copying {
@@ -83,6 +87,7 @@ public interface GenericEntitySet {
 			for (EntityField<?> field : srcEntity.getType().getIdFields()) {
 				if (field.getType() instanceof EntityType && id[f] != null)
 					id[f] = copyEntity((GenericEntity) id[f], dest);
+				f++;
 			}
 			GenericEntity destEntity = dest.getEntity(srcEntity.getType().getName(), id);
 			if (destEntity == null)

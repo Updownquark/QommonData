@@ -4,11 +4,12 @@ import java.io.IOException;
 import java.util.function.Predicate;
 
 import org.qommons.data.types.EntityType;
+import org.qommons.data.types.EntityTypeSet;
 import org.qommons.io.BetterFile;
 import org.qommons.io.TextParseException;
 
 public interface EntitySetPersistence {
-	boolean mayBePersistedData(BetterFile file) throws IOException, TextParseException;
+	boolean mayBePersistedData(BetterFile file, EntityTypeSet typeSet) throws IOException, TextParseException;
 
 	void populate(GenericEntitySet entitySet, BetterFile directory) throws IOException, TextParseException;
 

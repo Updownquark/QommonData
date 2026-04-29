@@ -25,7 +25,7 @@ public class ModifiableEntityField<F> implements EntityField<F> {
 	private final Set<FieldMapping<?, ?, ?>> theAncillaryMappingReferences;
 
 	ModifiableEntityField(ModifiableEntityType owner, String name, FieldType<F> type, boolean isId, FieldMappingPrecursor<?, ?> mapping,
-		FilePosition source) throws MigrationException {
+		FilePosition source) {
 		theOwner = owner;
 		theName = name;
 		theType = type;
@@ -46,7 +46,7 @@ public class ModifiableEntityField<F> implements EntityField<F> {
 		return theName;
 	}
 
-	public ModifiableEntityField setName(String newName, FilePosition source) throws MigrationException {
+	public ModifiableEntityField<F> setName(String newName, FilePosition source) throws MigrationException {
 		theOwner.renameField(this, newName, source);
 		return this;
 	}
@@ -109,6 +109,16 @@ public class ModifiableEntityField<F> implements EntityField<F> {
 		theOwner.removeField(this);
 	}
 
+	public StringBuilder append(StringBuilder str) {
+		str.append(theName);
+		if (isId)
+			str.append('*');
+		str.append(" (").append(theType).append(')');
+		if (theMapping != null)
+			theMapping.append(str.append(" mapped by "));
+		return str;
+	}
+
 	@Override
 	public String toString() {
 		return theOwner + "." + getName() + " (" + theType + ")";
@@ -117,22 +127,36 @@ public class ModifiableEntityField<F> implements EntityField<F> {
 	static class Unmodifiable<F> implements EntityField<F> {
 		private final ModifiableEntityField<F> theSource;
 		private final FieldMapping<F, ?, ?> theMapping;
+		private final FieldType<F> theType;
 
 		Unmodifiable(ModifiableEntityField<F> source) {
 			theSource = source;
 			theMapping = unmodifiableMapping(theSource.getMapping());
+			theType = unmodifiable(source.getType());
 		}
 
-		static <F, K, S> FieldMapping<F, K, S> unmodifiableMapping(FieldMapping<?, ?, ?> mapping) {
+		<F2, K, S> FieldMapping<F2, K, S> unmodifiableMapping(FieldMapping<?, ?, ?> mapping) {
 			if (mapping == null)
 				return null;
 			return new FieldMapping<>(//
-				((ModifiableEntityField<F>) mapping.parentField).unmodifiableView(), //
-				((ModifiableEntityField<GenericEntity>) mapping.mappedReferenceField).unmodifiableView(), //
-				mapping.keyField == null ? null : ((ModifiableEntityField<K>) mapping.keyField).unmodifiableView(),
-					mapping.indexField == null ? null : ((ModifiableEntityField<Integer>) mapping.indexField).unmodifiableView(),
-						mapping.sortByField == null ? null : ((ModifiableEntityField<S>) mapping.sortByField).unmodifiableView(),
-							mapping.parentIsOwner);
+				mapping.parentField == theSource ? (EntityField<F2>) this
+					: ((ModifiableEntityField<F2>) mapping.parentField).unmodifiableView(), //
+					((ModifiableEntityField<GenericEntity>) mapping.mappedReferenceField).unmodifiableView(), //
+					mapping.keyField == null ? null : ((ModifiableEntityField<K>) mapping.keyField).unmodifiableView(),
+						mapping.indexField == null ? null : ((ModifiableEntityField<Integer>) mapping.indexField).unmodifiableView(),
+							mapping.sortByField == null ? null : ((ModifiableEntityField<S>) mapping.sortByField).unmodifiableView(),
+								mapping.parentIsOwner);
+		}
+
+		static <F> FieldType<F> unmodifiable(FieldType<F> type) {
+			if (type instanceof ModifiableEntityType)
+				return (FieldType<F>) ((ModifiableEntityType) type).unmodifiableView();
+			else if (type instanceof ModifiableEnumType)
+				return (FieldType<F>) ((ModifiableEnumType) type).unmodifiableView();
+			else if (type instanceof FieldType.ParameterizedType) {
+				return ((FieldType.ParameterizedType<F>) type).map(Unmodifiable::unmodifiable);
+			} else
+				return type;
 		}
 
 		ModifiableEntityField<F> getSource() {
@@ -151,13 +175,7 @@ public class ModifiableEntityField<F> implements EntityField<F> {
 
 		@Override
 		public FieldType<F> getType() {
-			FieldType<F> type = theSource.getType();
-			if (type instanceof ModifiableEntityType)
-				return (FieldType<F>) ((ModifiableEntityType) type).unmodifiableView();
-			else if (type instanceof ModifiableEnumType)
-				return (FieldType<F>) ((ModifiableEnumType) type).unmodifiableView();
-			else
-				return type;
+			return theType;
 		}
 
 		@Override
@@ -182,7 +200,7 @@ public class ModifiableEntityField<F> implements EntityField<F> {
 
 		@Override
 		public Set<FieldMapping<?, ?, ?>> getAncillaryMappingReferences() {
-			return QommonsUtils.filterMapDistinct(theSource.getAncillaryMappingReferences(), null, Unmodifiable::unmodifiableMapping);
+			return QommonsUtils.filterMapDistinct(theSource.getAncillaryMappingReferences(), null, this::unmodifiableMapping);
 		}
 
 		@Override

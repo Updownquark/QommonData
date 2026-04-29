@@ -98,15 +98,33 @@ public class ModifiableEntityTypeSet implements EntityTypeSet {
 		theEnumTypes.remove(enumType);
 	}
 
+	@Override
+	public String toString() {
+		StringBuilder str = new StringBuilder();
+		if (!theEnumTypes.isEmpty()) {
+			str.append("Enums:");
+			for (ModifiableEnumType enumType : theEnumTypes)
+				enumType.append(str.append("\n\t"), 1);
+		}
+		if (!theEntityTypes.isEmpty()) {
+			if (!theEnumTypes.isEmpty())
+				str.append('\n');
+			str.append("Entities:");
+			for (ModifiableEntityType entityType : theEntityTypes)
+				entityType.append(str.append("\n\t"), 1);
+		}
+		return str.toString();
+	}
+
 	static class Unmodifiable implements EntityTypeSet {
 		private final BetterSortedSet<EntityType> theEntityTypes;
 		private final BetterSortedSet<EnumType> theEnumTypes;
 
 		Unmodifiable(ModifiableEntityTypeSet source) {
-			theEntityTypes = new MappedBetterSortedSet<>(source.theEntityTypes, ModifiableEntityType::unmodifiableView, null,
-				Named.DISTINCT_NUMBER_TOLERANT);
-			theEnumTypes = new MappedBetterSortedSet<>(source.theEnumTypes, ModifiableEnumType::unmodifiableView, null,
-				Named.DISTINCT_NUMBER_TOLERANT);
+			theEntityTypes = BetterCollections.unmodifiableSortedSet(new MappedBetterSortedSet<>(source.theEntityTypes,
+				ModifiableEntityType::unmodifiableView, null, Named.DISTINCT_NUMBER_TOLERANT));
+			theEnumTypes = BetterCollections.unmodifiableSortedSet(new MappedBetterSortedSet<>(source.theEnumTypes,
+				ModifiableEnumType::unmodifiableView, null, Named.DISTINCT_NUMBER_TOLERANT));
 		}
 
 		@Override

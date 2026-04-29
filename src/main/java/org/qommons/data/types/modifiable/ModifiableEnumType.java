@@ -4,6 +4,8 @@ import java.util.Collections;
 import java.util.Set;
 
 import org.qommons.Named;
+import org.qommons.StringUtils;
+import org.qommons.collect.BetterCollections;
 import org.qommons.collect.BetterHashMultiMap;
 import org.qommons.collect.BetterMultiMap;
 import org.qommons.collect.BetterSortedSet;
@@ -110,22 +112,30 @@ public class ModifiableEnumType implements EnumType {
 		theReferences.remove(field.getOwner(), field);
 	}
 
+	public StringBuilder append(StringBuilder str, int indent) {
+		str.append(theName);
+		for (EnumValue value : theValues)
+			StringUtils.indent(str.append('\n'), indent + 1).append(value.getName());
+		return str;
+	}
+
 	@Override
 	public String toString() {
 		return theName;
 	}
 
-	private static class Unmodifiable implements EnumType{
+	private static class Unmodifiable implements EnumType {
 		private final ModifiableEnumType theSource;
 		private final BetterSortedSet<EnumValue> theValues;
 		private final Set<EntityType> theReferrers;
 
 		Unmodifiable(ModifiableEnumType source) {
 			theSource = source;
-			theValues = new MappedBetterSortedSet<>(source.theValues, ModifiableEnumValue::unmodifiableView, null,
-				Named.DISTINCT_NUMBER_TOLERANT);
-			theReferrers = new MappedSet<>(source.theReferences.keySet(), ModifiableEntityType::unmodifiableView,
-				test -> theSource.theReferences.keySet().contains(((Unmodifiable) test).theSource));
+			theValues = BetterCollections.unmodifiableSortedSet(
+				new MappedBetterSortedSet<>(source.theValues, ModifiableEnumValue::unmodifiableView, null, Named.DISTINCT_NUMBER_TOLERANT));
+			theReferrers = Collections
+				.unmodifiableSet(new MappedSet<>(source.theReferences.keySet(), ModifiableEntityType::unmodifiableView,
+					test -> theSource.theReferences.keySet().contains(((Unmodifiable) test).theSource)));
 		}
 
 		@Override

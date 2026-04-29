@@ -2,10 +2,13 @@ package org.qommons.data.impl;
 
 import java.io.IOException;
 import java.util.Arrays;
+import java.util.Collection;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 
 import org.qommons.ArrayUtils;
+import org.qommons.Transaction;
 import org.qommons.collect.BetterCollection;
 import org.qommons.collect.BetterMap;
 import org.qommons.collect.BetterMultiMap;
@@ -20,6 +23,7 @@ import org.qommons.collect.ModControlledMap;
 import org.qommons.collect.ModControlledMultiMap;
 import org.qommons.collect.MultiEntryHandle;
 import org.qommons.collect.MultiEntryValueHandle;
+import org.qommons.collect.MultiMap;
 import org.qommons.collect.MutableCollectionElement;
 import org.qommons.collect.MutableCollectionElement.StdMsg;
 import org.qommons.collect.SimpleDeque;
@@ -35,6 +39,7 @@ public abstract class AbstractGenericEntity implements GenericEntity {
 	private final EntityType theType;
 	private final GenericEntitySet theEntitySet;
 	private Object[] theFieldValues;
+	private boolean isDeleted;
 
 	protected AbstractGenericEntity(EntityType type, GenericEntitySet entitySet, Object[] id) {
 		theType = type;
@@ -52,7 +57,7 @@ public abstract class AbstractGenericEntity implements GenericEntity {
 				if (field.getMapping() != null)
 					theFieldValues[i] = controlMappedStructure(theFieldValues[i], (FieldMapping<Object, ?, ?>) field.getMapping());
 				else
-					theFieldValues[i] = controlUnmappedStructure(theFieldValues[i], (EntityField<Object>) field.getType());
+					theFieldValues[i] = controlUnmappedStructure(theFieldValues[i], (EntityField<Object>) field);
 			}
 			i++;
 		}
@@ -175,53 +180,89 @@ public abstract class AbstractGenericEntity implements GenericEntity {
 
 	@Override
 	public String canDelete() {
-		// Check for references to this entity in the data set
-		int f = 0;
-		for (EntityField<?> field : theType.getFields()) {
-			if (field.getMappingReference() != null && theFieldValues[f] != null) {
-				String msg = entity(theFieldValues[f]).checkRemoveReference(field.getMappingReference(), this);
-				if (msg != null)
-					return msg;
+		try (Transaction t = getEntitySet().lock(false, null)) {
+			if (isDeleted)
+				return null;
+			// Check for references to this entity in the data set
+			// Mapped fields are cheap because we have the reference to the entity with us
+			int f = 0;
+			for (EntityField<?> field : theType.getFields()) {
+				if (field.getMappingReference() != null && theFieldValues[f] != null) {
+					String msg = entity(theFieldValues[f]).checkRemoveReference(field.getMappingReference(), this);
+					if (msg != null)
+						return msg;
+				}
+				f++;
 			}
-			f++;
-		}
-		for (EntityType referrer : theType.getReferrers()) {
-			Set<? extends EntityField<?>> references = theType.getReferences(referrer);
-			if (references.stream().filter(field -> field.getMapping() != null).findAny().isPresent()) {
-				try {
-					for (GenericEntity entity : theEntitySet.getEntities(referrer.getName())) {
-						for (EntityField<?> field : references) {
-							if (field.getMapping() != null) { // Otherwise already handled
-								if (refersToMe(entity.get(field), field))
-									return "Entity " + entity + " refers to this entity via field " + field;
+			for (EntityType referrer : theType.getReferrers()) {
+				Set<? extends EntityField<?>> references = theType.getReferences(referrer);
+				if (references.stream().anyMatch(AbstractGenericEntity::isPreservingReference)) {
+					try {
+						for (GenericEntity entity : theEntitySet.getEntities(referrer.getName())) {
+							if (!((AbstractGenericEntity) entity).isDeleted) {
+								for (EntityField<?> field : references) {
+									if (isPreservingReference(field) && refersToMe(entity.get(field), field))
+										return "Entity " + entity + " refers to this entity via field " + field;
+								}
 							}
 						}
+					} catch (IOException e) { // Maybe regretting throwing this
 					}
-				} catch (IOException e) { // Maybe regretting throwing this
 				}
 			}
+			return null;
 		}
-		return null;
+	}
+
+	private static boolean isPreservingReference(EntityField<?> field) {
+		if (field.getMapping() != null)
+			return false;
+		else if (field.getMappingReference() != null && field.getMappingReference().parentIsOwner)
+			return false;
+		else
+			return true;
 	}
 
 	@Override
 	public void delete() {
-		String canDelete = canDelete();
-		if (canDelete != null)
-			throw new IllegalStateException(canDelete);
+		try (Transaction t = getEntitySet().lock(true, null)) {
+			if (isDeleted)
+				return;
+			isDeleted = true;
+			String canDelete = canDelete();
+			if (canDelete != null)
+				throw new IllegalStateException(canDelete);
 
-		// Remove this entity from mapped reference fields
-		int f = 0;
-		for (EntityField<?> field : theType.getFields()) {
-			if (field.getMappingReference() != null && theFieldValues[f] != null)
-				entity(theFieldValues[f]).referenceRemoved(field.getMappingReference(), this);
-			f++;
+			int f = 0;
+			for (EntityField<?> field : theType.getFields()) {
+				if (theFieldValues[f] != null) {
+					if (field.getMappingReference() != null) // Remove this entity from mapped reference fields
+						entity(theFieldValues[f]).referenceRemoved(field.getMappingReference(), this);
+					else if (field.getMapping() != null && field.getMapping().parentIsOwner) // Cascade to entities we own
+						deleteAll(field.getType(), theFieldValues[f]);
+				}
+				f++;
+			}
+			deleted();
 		}
-
-		deleted();
 	}
 
 	protected abstract void deleted();
+
+	private void deleteAll(FieldType<?> fieldType, Object value) {
+		if (fieldType instanceof EntityType)
+			((GenericEntity) value).delete();
+		else if (fieldType instanceof FieldType.CollectionType) {
+			for (GenericEntity entity : (Collection<GenericEntity>) value)
+				entity.delete();
+		} else if (fieldType instanceof FieldType.MapType) {
+			for (GenericEntity entity : ((Map<?, GenericEntity>) value).values())
+				entity.delete();
+		} else if (fieldType instanceof FieldType.MultiMapType) {
+			for (GenericEntity entity : ((MultiMap<?, GenericEntity>) value).values())
+				entity.delete();
+		}
+	}
 
 	protected void fieldStructureChanged(EntityField<?> field) {
 	}
@@ -255,6 +296,8 @@ public abstract class AbstractGenericEntity implements GenericEntity {
 	}
 
 	private void referenceRemoved(FieldMapping<?, ?, ?> field, AbstractGenericEntity reference) {
+		if (isDeleted)
+			return;
 		FieldType<?> type = field.parentField.getType();
 		int index = theType.indexOf(field.parentField);
 		if (type instanceof EntityType) {
@@ -328,6 +371,8 @@ public abstract class AbstractGenericEntity implements GenericEntity {
 	}
 
 	private void referenceKeyChanged(FieldMapping<?, ?, ?> field, AbstractGenericEntity reference, Object oldKey, Object newKey) {
+		if (isDeleted)
+			return;
 		FieldType<?> type = field.parentField.getType();
 		int index = theType.indexOf(field.parentField);
 		if (type instanceof FieldType.MapType) {
@@ -473,7 +518,7 @@ public abstract class AbstractGenericEntity implements GenericEntity {
 	}
 
 	protected <T> T createEmptyStructure(EntityField<?> field, FieldType.ParameterizedType<T> type) {
-		if (field.getMapping() == null && field.getMapping().sortByField == null)
+		if (field.getMapping() == null || field.getMapping().sortByField == null)
 			return type.createEmptyStructure();
 		else if (type instanceof FieldType.CollectionType) {
 			return (T) ((FieldType.CollectionType<GenericEntity, ?>) type).createEmptyCollection(field.getMapping().entitySort);
@@ -483,34 +528,34 @@ public abstract class AbstractGenericEntity implements GenericEntity {
 			throw new IllegalStateException("Unrecognized mapped field type for sort-by: " + type);
 	}
 
-	private <F, K, S> F controlMappedStructure(F structure, FieldMapping<F, K, S> field) {
+	protected <F, K, S> F controlMappedStructure(F structure, FieldMapping<F, K, S> field) {
 		FieldType<F> type = field.parentField.getType();
 		if (type instanceof FieldType.CollectionType) {
 			MappedEntityCollectionControl<?> control = new MappedEntityCollectionControl<>(
 				(FieldMapping<? extends BetterCollection<GenericEntity>, Void, S>) field, this);
-			BetterCollection<GenericEntity> collection = ModControlledCollection.controlCollection(
-				(BetterCollection<GenericEntity>) structure, control, control);
+			BetterCollection<GenericEntity> collection = ModControlledCollection
+				.controlCollection((BetterCollection<GenericEntity>) structure, control, control);
 			((MappedEntityCollectionControl<BetterCollection<GenericEntity>>) control).init(collection);
 			return (F) collection;
 		} else if (type instanceof FieldType.MapType) {
 			MappedEntityMapControl<Object, ?> control = new MappedEntityMapControl<>(
 				(FieldMapping<? extends BetterMap<Object, GenericEntity>, Object, S>) field, this);
-			BetterMap<Object, GenericEntity> map = ModControlledMap
-				.controlMap((BetterMap<Object, GenericEntity>) structure, control, control);
+			BetterMap<Object, GenericEntity> map = ModControlledMap.controlMap((BetterMap<Object, GenericEntity>) structure, control,
+				control);
 			((MappedEntityMapControl<Object, BetterMap<Object, GenericEntity>>) control).init(map);
 			return (F) map;
 		} else if (type instanceof FieldType.MultiMapType) {
 			MappedEntityMultiMapControl<Object, ?> control = new MappedEntityMultiMapControl<>(
 				(FieldMapping<? extends BetterMultiMap<Object, GenericEntity>, Object, S>) field, this);
-			BetterMultiMap<Object, GenericEntity> map = ModControlledMultiMap.controlMultiMap(
-				(BetterMultiMap<Object, GenericEntity>) structure, control, control);
+			BetterMultiMap<Object, GenericEntity> map = ModControlledMultiMap
+				.controlMultiMap((BetterMultiMap<Object, GenericEntity>) structure, control, control);
 			((MappedEntityMultiMapControl<Object, BetterMultiMap<Object, GenericEntity>>) control).init(map);
 			return (F) map;
 		} else
 			throw new IllegalStateException("Unrecognized mapped field type: " + type);
 	}
 
-	private <K, V, F> F controlUnmappedStructure(F structure, EntityField<F> field) {
+	protected <K, V, F> F controlUnmappedStructure(F structure, EntityField<F> field) {
 		if (field.getType() instanceof FieldType.CollectionType) {
 			return (F) ModControlledCollection.controlCollection((BetterCollection<V>) structure, null,
 				new MemberCollectionControl<>(this, field));
@@ -523,11 +568,11 @@ public abstract class AbstractGenericEntity implements GenericEntity {
 			throw new IllegalStateException("Unrecognized structure field type: " + field.getType());
 	}
 
-	static class MemberCollectionControl<E> implements ModControlledCollection.CollectionModificationListener<E> {
+	protected static class MemberCollectionControl<E> implements ModControlledCollection.CollectionModificationListener<E> {
 		private final AbstractGenericEntity theOwner;
 		private final EntityField<?> theField;
 
-		MemberCollectionControl(AbstractGenericEntity owner, EntityField<?> field) {
+		public MemberCollectionControl(AbstractGenericEntity owner, EntityField<?> field) {
 			theOwner = owner;
 			theField = field;
 		}
@@ -563,19 +608,19 @@ public abstract class AbstractGenericEntity implements GenericEntity {
 		}
 	}
 
-	static class MappedEntityCollectionControl<C extends BetterCollection<GenericEntity>>
+	protected static class MappedEntityCollectionControl<C extends BetterCollection<GenericEntity>>
 	implements ModControlledCollection.CollectionModificationControl<GenericEntity>,
 	ModControlledCollection.CollectionModificationListener<GenericEntity> {
 		private final FieldMapping<C, Void, ?> theField;
 		private final GenericEntity theOwner;
 		private C theCollection;
 
-		MappedEntityCollectionControl(FieldMapping<C, Void, ?> field, GenericEntity owner) {
+		public MappedEntityCollectionControl(FieldMapping<C, Void, ?> field, GenericEntity owner) {
 			theField = field;
 			theOwner = owner;
 		}
 
-		void init(C collection) {
+		public void init(C collection) {
 			theCollection = collection;
 		}
 
@@ -591,7 +636,9 @@ public abstract class AbstractGenericEntity implements GenericEntity {
 			if (mappedRef != null && mappedRef != theOwner)
 				return "Field " + theField.mappedReferenceField.getName() + " of " + value.getType() + " is set to a different "
 				+ theField.mappedReferenceField.getType();
-			return value.isAcceptable(theField.mappedReferenceField, theOwner);
+			if (value.get(theField.mappedReferenceField) != theOwner)
+				return value.isAcceptable(theField.mappedReferenceField, theOwner);
+			return null;
 		}
 
 		@Override
@@ -626,7 +673,8 @@ public abstract class AbstractGenericEntity implements GenericEntity {
 
 		@Override
 		public void elementAdded(CollectionElement<GenericEntity> element) {
-			element.get().set(theField.mappedReferenceField, theOwner);
+			if (element.get().get(theField.mappedReferenceField) != theOwner)
+				element.get().set(theField.mappedReferenceField, theOwner);
 		}
 
 		@Override
@@ -671,11 +719,11 @@ public abstract class AbstractGenericEntity implements GenericEntity {
 		}
 	}
 
-	static class MemberMapControl<K, V> implements ModControlledMap.MapModificationListener<K, V> {
+	protected static class MemberMapControl<K, V> implements ModControlledMap.MapModificationListener<K, V> {
 		private final AbstractGenericEntity theOwner;
 		private final EntityField<?> theField;
 
-		MemberMapControl(AbstractGenericEntity owner, EntityField<?> field) {
+		public MemberMapControl(AbstractGenericEntity owner, EntityField<?> field) {
 			theOwner = owner;
 			theField = field;
 		}
@@ -715,18 +763,18 @@ public abstract class AbstractGenericEntity implements GenericEntity {
 		}
 	}
 
-	static class MappedEntityMapControl<K, M extends BetterMap<K, GenericEntity>>
+	protected static class MappedEntityMapControl<K, M extends BetterMap<K, GenericEntity>>
 	implements ModControlledMap.MapModificationControl<K, GenericEntity>, ModControlledMap.MapModificationListener<K, GenericEntity> {
 		private final FieldMapping<M, K, ?> theField;
 		private final GenericEntity theOwner;
 		private M theMap;
 
-		MappedEntityMapControl(FieldMapping<M, K, ?> field, GenericEntity owner) {
+		public MappedEntityMapControl(FieldMapping<M, K, ?> field, GenericEntity owner) {
 			theField = field;
 			theOwner = owner;
 		}
 
-		void init(M map) {
+		public void init(M map) {
 			theMap = map;
 		}
 
@@ -839,11 +887,11 @@ public abstract class AbstractGenericEntity implements GenericEntity {
 		}
 	}
 
-	static class MemberMultiMapControl<K, V> implements ModControlledMultiMap.MultiMapModificationListener<K, V> {
+	protected static class MemberMultiMapControl<K, V> implements ModControlledMultiMap.MultiMapModificationListener<K, V> {
 		private final AbstractGenericEntity theOwner;
 		private final EntityField<?> theField;
 
-		MemberMultiMapControl(AbstractGenericEntity owner, EntityField<?> field) {
+		public MemberMultiMapControl(AbstractGenericEntity owner, EntityField<?> field) {
 			theOwner = owner;
 			theField = field;
 		}
@@ -898,19 +946,19 @@ public abstract class AbstractGenericEntity implements GenericEntity {
 		}
 	}
 
-	static class MappedEntityMultiMapControl<K, M extends BetterMultiMap<K, GenericEntity>>
+	protected static class MappedEntityMultiMapControl<K, M extends BetterMultiMap<K, GenericEntity>>
 	implements ModControlledMultiMap.MultiMapModificationControl<K, GenericEntity>,
 	ModControlledMultiMap.MultiMapModificationListener<K, GenericEntity> {
 		private final FieldMapping<M, K, ?> theField;
 		private final GenericEntity theOwner;
 		private M theMap;
 
-		MappedEntityMultiMapControl(FieldMapping<M, K, ?> field, GenericEntity owner) {
+		public MappedEntityMultiMapControl(FieldMapping<M, K, ?> field, GenericEntity owner) {
 			theField = field;
 			theOwner = owner;
 		}
 
-		void init(M map) {
+		public void init(M map) {
 			theMap = map;
 		}
 

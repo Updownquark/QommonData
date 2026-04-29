@@ -120,8 +120,10 @@ public abstract class SchemaMigration implements Migration {
 
 		private ModifiableEntityType applySchemaChange(ModifiableEntityTypeSet entities) throws MigrationException {
 			ModifiableEntityType entityType = createEntityType(entities, null);
-			for (AddFieldMigration field : fields.values())
-				field.addField(entityType);
+			for (AddFieldMigration field : fields.values()) {
+				if (!idFieldNames.contains(field.fieldName))
+					field.addField(entityType);
+			}
 			return entityType;
 		}
 
@@ -441,7 +443,7 @@ public abstract class SchemaMigration implements Migration {
 			throws IOException, TextParseException, DataSetModificationException {
 			F initialValue;
 			if (initValue != null)
-				initialValue = MigrationUtil.parseFieldValue(initValue, field.getType(), dataSet, this::getPosition);
+				initialValue = MigrationUtil.parseFieldValue(initValue, field.getType(), dataSet, p -> getPosition());
 			else if (field.getType() instanceof FieldType.ParameterizedType)
 				initialValue = ((FieldType.ParameterizedType<F>) field.getType()).createEmptyStructure();
 			else

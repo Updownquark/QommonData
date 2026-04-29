@@ -8,8 +8,9 @@ import java.io.Reader;
 import java.io.Writer;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
-import java.time.OffsetDateTime;
+import java.time.LocalDateTime;
 import java.time.ZoneId;
+import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
@@ -88,6 +89,16 @@ public class MigrationPersistence {
 		return BetterCollections.unmodifiableSortedSet(migrationSets);
 	}
 
+	public static Instant parseMigrationTime(String dateStr) throws DateTimeParseException {
+		DateTimeFormatter format;
+		if (dateStr.length() > DATE_FORMAT_PATTERN.length())
+			format = TZ_DATE_FORMAT;
+		else
+			format = NO_TZ_DATE_FORMAT;
+		LocalDateTime localTime = LocalDateTime.from(format.parse(dateStr));
+		return localTime.atOffset(ZoneOffset.UTC).toInstant();
+	}
+
 	private static MigrationSet parseMigrationSet(StrictXmlReader msEl, Map<String, Class<?>> classCache, ClassLoader classLoader)
 		throws TextParseException {
 		String author = msEl.getAttribute("author");
@@ -96,10 +107,7 @@ public class MigrationPersistence {
 
 		Instant date;
 		try {
-			if (dateStr.length() > DATE_FORMAT_PATTERN.length())
-				date = OffsetDateTime.parse(dateStr, TZ_DATE_FORMAT).toInstant();
-			else
-				date = OffsetDateTime.parse(dateStr, NO_TZ_DATE_FORMAT).toInstant();
+			date = parseMigrationTime(dateStr);
 		} catch (DateTimeParseException e) {
 			throw new TextParseException("Could not parse migration-set.date: '" + dateStr + "'",
 				msEl.getAttributeNamePosition("date").getPosition(0), e);
@@ -370,6 +378,16 @@ public class MigrationPersistence {
 
 		String initValue = xml.getAttributeIfExists("init-value");
 		String initWith = xml.getAttributeIfExists("init-with");
+		if (mappedReference != null) {
+			if (initValue != null)
+				throw new TextParseException(
+					"Fields cannot be initialized for mapped fields, since mapped field content is determined by the field values on the members",
+					xml.getAttributeValuePosition("init-value").getPosition(0));
+			if (initWith != null)
+				throw new TextParseException(
+					"Fields cannot be initialized for mapped fields, since mapped field content is determined by the field values on the members",
+					xml.getAttributeValuePosition("init-with").getPosition(0));
+		}
 		if (migrators == null) { // Field declaration within an add-entity migration
 			if (initValue != null)
 				throw new TextParseException("Fields cannot be initialized for new entity types, since there are initially no instances",
@@ -377,19 +395,21 @@ public class MigrationPersistence {
 			if (initWith != null)
 				throw new TextParseException("Fields cannot be initialized for new entity types, since there are initially no instances",
 					xml.getAttributeValuePosition("init-with").getPosition(0));
-		} else if (initValue == null && initWith == null) {
+		} else if (mappedReference == null && initValue == null && initWith == null) {
 			throw new TextParseException("Added fields must be initialized via 'init-value=\"<value>\"' and/or 'init-with=\"<migrator>\"'",
 				xml.getNamePosition().getPosition(0));
 		}
-		ConfigurableCustomMigrator<?> migrator = migrators.get(initWith);
+		ConfigurableCustomMigrator<?> migrator;
 		if (initWith != null) {
+			migrator = migrators.get(initWith);
 			if (migrator == null)
 				throw new TextParseException("No such migrator found with ref-id '" + initWith + "'",
 					xml.getAttributeValuePosition("init-with").getPosition(0));
 			else if (!EntityFieldInitializer.class.isAssignableFrom(migrator.migrator))
 				throw new TextParseException("Migrator " + migrator + " is not an instance of " + EntityFieldInitializer.class.getName()
 					+ ", which is required to initialize field values", xml.getAttributeValuePosition("init-with").getPosition(0));
-		}
+		} else
+			migrator = null;
 		return new SchemaMigration.AddFieldMigration(migSet, xml.getNamePosition().getPosition(0), entity, getIdentifier(xml, "name", true),
 			xml.getAttribute("type"), mappedReference, mapKey, mapIndex, mapSort, ownsTarget, initValue,
 			(ConfigurableCustomMigrator<EntityFieldInitializer>) migrator, parseRequiredFields(xml, null));

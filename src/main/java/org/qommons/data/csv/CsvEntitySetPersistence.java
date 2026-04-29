@@ -5,17 +5,21 @@ import java.io.IOException;
 import java.io.OutputStreamWriter;
 import java.io.Writer;
 import java.nio.charset.StandardCharsets;
-import java.util.Arrays;
+import java.util.Collection;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.IntFunction;
 import java.util.function.Predicate;
 
 import org.qommons.StringUtils;
+import org.qommons.collect.MultiMap;
 import org.qommons.data.migration.MigrationUtil;
 import org.qommons.data.types.EntityField;
 import org.qommons.data.types.EntityType;
+import org.qommons.data.types.EntityTypeSet;
+import org.qommons.data.types.FieldType;
 import org.qommons.data.values.EntitySetPersistence;
 import org.qommons.data.values.GenericEntity;
 import org.qommons.data.values.GenericEntitySet;
@@ -35,8 +39,11 @@ public class CsvEntitySetPersistence implements EntitySetPersistence {
 	}
 
 	@Override
-	public boolean mayBePersistedData(BetterFile file) throws IOException, TextParseException {
-		return StringUtils.endsWithIgnoreCase(file.getName(), CSV_SUFFIX);
+	public boolean mayBePersistedData(BetterFile file, EntityTypeSet typeSet) throws IOException, TextParseException {
+		if (file.isFile() && StringUtils.endsWithIgnoreCase(file.getName(), CSV_SUFFIX)) {
+			return typeSet.getEntityType(file.getName().substring(0, file.getName().length() - CSV_SUFFIX.length())) != null;
+		} else
+			return false;
 	}
 
 	@Override
@@ -162,9 +169,8 @@ public class CsvEntitySetPersistence implements EntitySetPersistence {
 			EntityField<?>[] header = new EntityField[line.length];
 			Set<String> foundFields = new HashSet<>();
 			int foundIds = 0;
-			int[] idIndexes = new int[foundIds];
+			int[] idIndexes = new int[entityType.getIdFields().size()];
 			EntityField<?>[] fieldOrder = new EntityField[line.length];
-			Arrays.fill(fieldOrder, -1);
 			for (int i = 0; i < line.length; i++) {
 				EntityField<?> field = entityType.getField(line[i]);
 				if (field == null) {
@@ -191,9 +197,19 @@ public class CsvEntitySetPersistence implements EntitySetPersistence {
 				if (foundIds < entityType.getIdFields().size())
 					throw new TextParseException("One or more ID fields of entity " + entityType + " are missing in value persistence",
 						new LocatedFilePosition(entityFile.getPath(), new FilePosition(0, 0, 0)));
-				else
-					System.err.println(
-						"One or more fields of entity " + entityType + " are missing in value persistence. These fields will be null.");
+				StringBuilder msg = null;
+				for (EntityField<?> field : entityType.getFields()) {
+					if (field.getMapping() == null && !foundFields.contains(field.getName())) {
+						if (msg == null)
+							msg = new StringBuilder("One or more fields of entity ").append(entityType)
+							.append(" are missing in value persistence: ");
+						else
+							msg.append(", ");
+						msg.append(field.getName());
+					}
+				}
+				if (msg != null)
+					System.err.println(msg.append(". These fields will be null.").toString());
 			}
 			parseValues(parser, entityType, entitySet, idIndexes, fieldOrder, line, firstRound);
 		}
@@ -203,11 +219,12 @@ public class CsvEntitySetPersistence implements EntitySetPersistence {
 	private static void parseValues(TabularFileParser parser, EntityType entityType, GenericEntitySet entitySet, int[] idIndexes,
 		EntityField<?>[] fieldOrder, String[] line, boolean firstRound) throws IOException, TextParseException {
 		Object[] idValues = new Object[idIndexes.length];
+		ColumnPositionGetter sourcePos = new ColumnPositionGetter(parser);
 		while (parser.parseNextLine(line)) {
 			for (int i = 0; i < idIndexes.length; i++) {
 				int idColumn = idIndexes[i];
 				idValues[i] = MigrationUtil.parseFieldValue(line[idColumn], entityType.getIdFields().get(i).getType(), entitySet,
-					() -> parser.getColumnPosition(idColumn));
+					sourcePos.setColumn(idColumn));
 			}
 			GenericEntity entity;
 			if (firstRound)
@@ -217,12 +234,50 @@ public class CsvEntitySetPersistence implements EntitySetPersistence {
 			for (int i = 0; i < line.length; i++) {
 				int column = i;
 				EntityField<?> field = fieldOrder[column];
-				if (fieldOrder == null || (!firstRound && entity.get(field) != null)) {
+				if (field == null || (!firstRound && entity.get(field) != null)) {
 					continue; // Already populated, no need to retrieve it
 				}
-				entity.set(field,
-					MigrationUtil.parseFieldValue(line[i], field.getType(), entitySet, () -> parser.getColumnPosition(column)));
+				populateField(entity, field, line[i], entitySet, sourcePos.setColumn(column));
 			}
+		}
+	}
+
+	private static <F> void populateField(GenericEntity entity, EntityField<F> field, String text, GenericEntitySet entitySet,
+		IntFunction<FilePosition> source) throws IOException, TextParseException {
+		F value = MigrationUtil.parseFieldValue(text, field.getType(), entitySet, source);
+		if (field.getType() instanceof FieldType.CollectionType) {
+			((Collection<Object>) entity.get(field)).addAll((Collection<?>) value);
+		} else if (field.getType() instanceof FieldType.MapType) {
+			((Map<Object, Object>) entity.get(field)).putAll((Map<?, ?>) value);
+		} else if (field.getType() instanceof FieldType.MultiMapType) {
+			((MultiMap<Object, Object>) entity.get(field)).putAll((MultiMap<?, ?>) value);
+		} else
+			entity.set(field, value);
+	}
+
+	static class ColumnPositionGetter implements IntFunction<FilePosition> {
+		private final TabularFileParser theParser;
+		private int theColumn;
+
+		ColumnPositionGetter(TabularFileParser parser) {
+			theParser = parser;
+		}
+
+		ColumnPositionGetter setColumn(int column) {
+			theColumn = column;
+			return this;
+		}
+
+		@Override
+		public FilePosition apply(int p) {
+			FilePosition columnPos = theParser.getColumnPosition(theColumn);
+			if (p == 0)
+				return columnPos;
+			else if (columnPos instanceof LocatedFilePosition)
+				return new LocatedFilePosition(((LocatedFilePosition) columnPos).getFileLocation(), //
+					columnPos.getPosition() + p, columnPos.getLineNumber(), columnPos.getCharNumber() + p);
+			else
+				return new FilePosition(columnPos.getPosition() + p, columnPos.getLineNumber(), columnPos.getCharNumber() + p);
 		}
 	}
 }

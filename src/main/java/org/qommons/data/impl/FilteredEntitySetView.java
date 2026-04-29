@@ -7,6 +7,9 @@ import java.util.Set;
 import java.util.function.Function;
 
 import org.qommons.IterableUtils;
+import org.qommons.Lockable.CoreId;
+import org.qommons.ThreadConstraint;
+import org.qommons.Transaction;
 import org.qommons.data.types.EntityField;
 import org.qommons.data.types.EntityType;
 import org.qommons.data.types.EntityTypeSet;
@@ -48,6 +51,26 @@ public class FilteredEntitySetView implements GenericEntitySet {
 	@Override
 	public EntityTypeSet getTypes() {
 		return theDataTypes;
+	}
+
+	@Override
+	public Transaction lock(boolean write, Object cause) {
+		return theSource.lock(write, cause);
+	}
+
+	@Override
+	public Transaction tryLock(boolean write, Object cause) {
+		return theSource.tryLock(write, cause);
+	}
+
+	@Override
+	public CoreId getCoreId() {
+		return theSource.getCoreId();
+	}
+
+	@Override
+	public ThreadConstraint getThreadConstraint() {
+		return theSource.getThreadConstraint();
 	}
 
 	private EntityView getView(String typeName) {

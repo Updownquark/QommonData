@@ -5,12 +5,12 @@ import org.qommons.data.types.EnumType;
 import org.qommons.data.types.EnumValue;
 
 public class EnumTypeMapping<E extends Enum<E>> implements Named {
-	private final EnumType genericType;
+	private final EnumType theGenericType;
 	public final Class<E> codeType;
 	private final EnumValue[] theValueMapping;
 
 	public EnumTypeMapping(EnumType genericType, Class<? extends Enum<?>> codeType) {
-		this.genericType = genericType;
+		this.theGenericType = genericType;
 		this.codeType = (Class<E>) codeType;
 		theValueMapping = new EnumValue[genericType.getValues().size()];
 		int i = 0;
@@ -20,10 +20,15 @@ public class EnumTypeMapping<E extends Enum<E>> implements Named {
 
 	@Override
 	public String getName() {
-		return genericType.getName();
+		return theGenericType.getName();
 	}
 
 	public EnumValue getCodeOrderedEnum(int ordinal) {
 		return theValueMapping[ordinal];
+	}
+
+	@Override
+	public String toString() {
+		return theGenericType.getName();
 	}
 }

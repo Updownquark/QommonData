@@ -23,14 +23,17 @@ public class EntityFieldMapping<G, R> implements Named {
 	private final EntityField<G> theGenericField;
 	private final Method theGetter;
 	private final FieldValueMapper<G, R> theMapper;
-	private final Comparator<? super R> theSorting;
+	private Comparator<? super R> theSorting;
 
 	public EntityFieldMapping(EntityTypeMapping<?> owner, EntityField<G> genericField, Method getter, EntityTypeSetMapping types) {
 		theOwner = owner;
 		theGenericField = genericField;
 		theGetter = getter;
 		theMapper = createMapper(genericField.getType(), getter.getGenericReturnType());
-		theSorting = (Comparator<? super R>) sortRealValues(genericField.getType(), types);
+	}
+
+	void init() {
+		theSorting = (Comparator<? super R>) sortRealValues(theGenericField.getType(), theOwner.getTypeSet());
 	}
 
 	public EntityTypeMapping<?> getOwner() {
@@ -56,6 +59,11 @@ public class EntityFieldMapping<G, R> implements Named {
 
 	public R map(G genericValue, R emptyValue, MappedEntitySet entitySet) {
 		return theMapper.map(genericValue, emptyValue, entitySet);
+	}
+
+	@Override
+	public String toString() {
+		return theGenericField.toString();
 	}
 
 	private interface FieldValueMapper<G, R> {

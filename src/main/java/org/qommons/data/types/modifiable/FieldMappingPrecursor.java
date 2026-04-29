@@ -68,6 +68,8 @@ public class FieldMappingPrecursor<K, S> {
 				+ " does not fit any of these criteria.", source);
 
 		mappedReferenceField = (ModifiableEntityField<GenericEntity>) target.getField(mapReference);
+		if (mappedReferenceField == null)
+			throw new MigrationException("No such mapped-reference field " + target + "." + mapReference, source);
 		if (key == null)
 			this.keyField = null;
 		else {

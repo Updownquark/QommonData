@@ -3,25 +3,29 @@ package org.qommons.data.mapping;
 import java.lang.reflect.Method;
 import java.lang.reflect.ParameterizedType;
 import java.lang.reflect.Type;
-import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.NavigableMap;
 import java.util.NavigableSet;
 import java.util.Set;
-import java.util.SortedMap;
-import java.util.SortedSet;
 import java.util.TreeMap;
 import java.util.TreeSet;
 import java.util.stream.Collectors;
 
 import org.qommons.ClassMap;
 import org.qommons.Named;
+import org.qommons.StringUtils;
+import org.qommons.collect.BetterList;
+import org.qommons.collect.BetterMap;
+import org.qommons.collect.BetterMultiMap;
+import org.qommons.collect.BetterSet;
 import org.qommons.collect.BetterSortedList;
-import org.qommons.collect.MultiMap;
-import org.qommons.collect.SortedMultiMap;
+import org.qommons.collect.BetterSortedMap;
+import org.qommons.collect.BetterSortedMultiMap;
+import org.qommons.collect.BetterSortedSet;
 import org.qommons.data.types.EntityField;
 import org.qommons.data.types.EntityType;
 import org.qommons.data.types.EntityTypeSet;
@@ -71,10 +75,10 @@ public class EntityTypeSetMapping {
 	}
 
 	public static class MappedTypeSetDiff {
-		public final NavigableSet<MappedEntityDiff> entityTypes;
-		public final NavigableSet<MappedEnumDiff> enumTypes;
+		public final List<MappedEntityDiff> entityTypes;
+		public final List<MappedEnumDiff> enumTypes;
 
-		public MappedTypeSetDiff(NavigableSet<MappedEntityDiff> entityTypes, NavigableSet<MappedEnumDiff> enumTypes) {
+		public MappedTypeSetDiff(List<MappedEntityDiff> entityTypes, List<MappedEnumDiff> enumTypes) {
 			this.entityTypes = entityTypes;
 			this.enumTypes = enumTypes;
 		}
@@ -126,7 +130,7 @@ public class EntityTypeSetMapping {
 		}
 	}
 
-	public static class MappedFieldDiff implements Named {
+	public static class MappedFieldDiff implements Named, Comparable<MappedFieldDiff> {
 		public final EntityField<?> genericField;
 		public final Method getter;
 		public final String codeFieldName;
@@ -145,6 +149,11 @@ public class EntityTypeSetMapping {
 				return codeFieldName;
 			else
 				return genericField.getName();
+		}
+
+		@Override
+		public int compareTo(MappedFieldDiff o) {
+			return StringUtils.compareNumberTolerant(genericField.getName(), o.genericField.getName(), true, true);
 		}
 
 		public void print(StringBuilder str) {
@@ -243,8 +252,8 @@ public class EntityTypeSetMapping {
 			if (theEntityDiffs.isEmpty() && theEnumDiffs.isEmpty())
 				return null;
 			return new MappedTypeSetDiff(//
-				Collections.unmodifiableNavigableSet(theEntityDiffs.values().stream().collect(Collectors.toCollection(TreeSet::new))),
-				Collections.unmodifiableNavigableSet(theEnumDiffs.values().stream().collect(Collectors.toCollection(TreeSet::new))));
+				Collections.unmodifiableList(theEntityDiffs.values().stream().collect(Collectors.toList())),
+				Collections.unmodifiableList(theEnumDiffs.values().stream().collect(Collectors.toList())));
 		}
 
 		public EntityTypeSetMapping getMappedTypeSet() {
@@ -263,22 +272,25 @@ public class EntityTypeSetMapping {
 					theEnumDiffs.put(enumType.getName(), new MappedEnumDiff(enumType, null));
 			}
 			for (EntityType entity : theGenericTypes.getEntityTypes()) {
-				if (!theMappedEntities.containsKey(entity.getName()))
+				EntityTypeMapping<?> mapped = theMappedEntities.get(entity.getName());
+				if (mapped == null)
 					theEntityDiffs.put(entity.getName(), new MappedEntityDiff(entity, null, null, Collections.emptyNavigableSet()));
+				else
+					mapped.init();
 			}
 		}
 
-		private void mapEntity(Class<?> codeType, T entity) {
+		private EntityType mapEntity(Class<?> codeType, T entity) {
 			String entityName = theEntityMapping.getEntityName(codeType, entity);
-			if (!theMappedEntities.containsKey(entityName) && !theEntityDiffs.containsKey(entityName)) {
-				EntityType genericType = theGenericTypes.getEntityType(entityName);
-				if (genericType == null)
-					theEntityDiffs.put(entityName, new MappedEntityDiff(null, codeType, entityName, Collections.emptyNavigableSet()));
-				else {
-					NavigableMap<String, EntityFieldMapping<?, ?>> fields = new TreeMap<>();
-					EntityTypeMapping<?> mapping = new EntityTypeMapping<>(theMappedTypeSet, genericType, codeType,
-						Collections.unmodifiableNavigableMap(fields));
-					theMappedEntities.put(genericType.getName(), mapping);
+			if (theMappedEntities.containsKey(entityName) || theEntityDiffs.containsKey(entityName))
+				return theGenericTypes.getEntityType(entityName);
+			EntityType genericType = theGenericTypes.getEntityType(entityName);
+			if (genericType == null)
+				theEntityDiffs.put(entityName, new MappedEntityDiff(null, codeType, entityName, Collections.emptyNavigableSet()));
+			else {
+				NavigableMap<String, EntityFieldMapping<?, ?>> fields = new TreeMap<>();
+				new EntityTypeMapping<>(theMappedTypeSet, genericType, codeType, Collections.unmodifiableNavigableMap(fields), mapping2 -> {
+					theMappedEntities.put(genericType.getName(), mapping2);
 					for (Method method : codeType.getMethods()) {
 						if (method.getParameterCount() == 0 && method.getReturnType() != void.class) {
 							String fieldName = theEntityMapping.getField(entity, method);
@@ -289,85 +301,101 @@ public class EntityTypeSetMapping {
 									.computeIfAbsent(genericType.getName(), __ -> new TreeSet<>(Named.DISTINCT_NUMBER_TOLERANT))
 									.add(new MappedFieldDiff(null, method, fieldName, "Present in code, but not in documentation"));
 								} else {
-									fields.put(fieldName, new EntityFieldMapping<>(mapping, field, method, theMappedTypeSet));
-									checkField(mapping, method, field);
+									fields.put(fieldName, new EntityFieldMapping<>(mapping2, field, method, theMappedTypeSet));
+									checkField(mapping2, method, field);
 								}
 							}
 						}
 					}
-					for (EntityField<?> field : genericType.getFields()) {
-						if (!fields.containsKey(field.getName())) {
-							theFieldDiffs.computeIfAbsent(genericType.getName(), __ -> new TreeSet<>(Named.DISTINCT_NUMBER_TOLERANT))
-							.add(new MappedFieldDiff(field, null, null, "Present in documentation, but not in code"));
-						}
-					}
-					NavigableSet<MappedFieldDiff> fieldDiffs = theFieldDiffs.remove(genericType.getName());
-					if (fieldDiffs != null) {
-						theEntityDiffs.put(genericType.getName(), new MappedEntityDiff(genericType, codeType, genericType.getName(),
-							Collections.unmodifiableNavigableSet(fieldDiffs)));
+				});
+				for (EntityField<?> field : genericType.getFields()) {
+					if (!fields.containsKey(field.getName())) {
+						theFieldDiffs.computeIfAbsent(genericType.getName(), __ -> new TreeSet<>(Named.DISTINCT_NUMBER_TOLERANT))
+						.add(new MappedFieldDiff(field, null, null, "Present in documentation, but not in code"));
 					}
 				}
+				NavigableSet<MappedFieldDiff> fieldDiffs = theFieldDiffs.remove(genericType.getName());
+				if (fieldDiffs != null) {
+					theEntityDiffs.put(genericType.getName(), new MappedEntityDiff(genericType, codeType, genericType.getName(),
+						Collections.unmodifiableNavigableSet(fieldDiffs)));
+				}
 			}
+			return genericType;
 		}
 
 		private void checkField(EntityTypeMapping<?> entity, Method method, EntityField<?> field) {
 			Type type = method.getGenericReturnType();
-			if (!checkFieldType(method.getGenericReturnType())) {
+			FieldType<?> matchFieldType = checkFieldType(method.getGenericReturnType());
+			if (matchFieldType == null) {
 				theFieldDiffs.computeIfAbsent(field.getOwner().getName(), __ -> new TreeSet<>()).add(
 					new MappedFieldDiff(field, method, field.getName(), "Unhandled field type: " + printType(new StringBuilder(), type)));
-			}
+			} else if (!matchFieldType.equals(field.getType()))
+				theFieldDiffs.computeIfAbsent(field.getOwner().getName(), __ -> new TreeSet<>())
+				.add(new MappedFieldDiff(field, method, field.getName(),
+					"Generic field type " + field.getType() + " does not match entity type " + printType(new StringBuilder(), type)));
 		}
 
-		private boolean checkFieldType(Type type) {
+		private FieldType<?> checkFieldType(Type type) {
 			if (type instanceof Class) {
 				if (((Class<?>) type).isEnum()) {
-					mapEnum((Class<? extends Enum<?>>) type);
+					return mapEnum((Class<? extends Enum<?>>) type);
 				} else {
 					FieldType.SimpleType<?> simple = FieldType.SimpleType.get((Class<?>) type);
-					if (simple == null) {
-						T entity = theEntityMapping.isEntity((Class<?>) type);
-						if (entity != null)
-							mapEntity((Class<?>) type, entity);
-						else {
-							return false;
-						}
+					if (simple != null)
+						return simple;
+					T entity = theEntityMapping.isEntity((Class<?>) type);
+					if (entity != null)
+						return mapEntity((Class<?>) type, entity);
+					else {
+						return null;
 					}
 				}
 			} else if (type instanceof ParameterizedType) {
 				ParameterizedType pt = (ParameterizedType) type;
 				if (!(pt.getRawType() instanceof Class))
-					return false;
+					return null;
 				Class<?> raw = theEntityMapping.getGenericRawType((Class<?>) pt.getRawType());
 				Type[] params = pt.getActualTypeArguments();
-				if (SortedMultiMap.class.isAssignableFrom(raw)) {//
-				} else if (MultiMap.class.isAssignableFrom(raw)) {//
-				} else if (SortedMap.class.isAssignableFrom(raw)) {//
-				} else if (Map.class.isAssignableFrom(raw)) {//
-				} else if (SortedSet.class.isAssignableFrom(raw)) {//
-				} else if (BetterSortedList.class.isAssignableFrom(raw)) {//
-				} else if (Set.class.isAssignableFrom(raw)) {//
-				} else if (!Collection.class.isAssignableFrom(raw)) {//
-					return false;
+				FieldType<?>[] paramTypes = new FieldType[params.length];
+				for (int p = 0; p < params.length; p++) {
+					paramTypes[p] = checkFieldType(params[p]);
+					if (paramTypes[p] == null)
+						return null;
 				}
-				for (Type param : params) {
-					if (!checkFieldType(param))
-						return false;
-				}
+				if (raw.isAssignableFrom(BetterList.class))
+					return new FieldType.CollectionType<>(paramTypes[0], false, false);
+				else if (raw.isAssignableFrom(BetterSet.class))
+					return new FieldType.CollectionType<>(paramTypes[0], false, true);
+				else if (raw.isAssignableFrom(BetterSortedList.class))
+					return new FieldType.CollectionType<>(paramTypes[0], true, false);
+				else if (raw.isAssignableFrom(BetterSortedSet.class))
+					return new FieldType.CollectionType<>(paramTypes[0], true, true);
+				else if (raw.isAssignableFrom(BetterMap.class))
+					return new FieldType.MapType<>(paramTypes[0], paramTypes[1], false);
+				else if (raw.isAssignableFrom(BetterSortedMap.class))
+					return new FieldType.MapType<>(paramTypes[0], paramTypes[1], true);
+				else if (raw.isAssignableFrom(BetterMultiMap.class))
+					return new FieldType.MultiMapType<>(paramTypes[0], paramTypes[1], false);
+				else if (raw.isAssignableFrom(BetterSortedMultiMap.class))
+					return new FieldType.MultiMapType<>(paramTypes[0], paramTypes[1], true);
+				else
+					return null;
 			} else
-				return false;
-			return true;
+				return null;
 		}
 
-		private void mapEnum(Class<? extends Enum<?>> enumType) {
+		private <E extends Enum<E>> EnumType mapEnum(Class<? extends Enum<?>> enumType) {
 			String name = enumType.getSimpleName();
 			if (theMappedEnums.containsKey(name) || theEnumDiffs.containsKey(name)) {
-				return; // Already taken care of
+				return theGenericTypes.getEnumType(name); // Already taken care of
 			}
 			EnumType genericEnum = theGenericTypes.getEnumType(name);
 			if (genericEnum == null) {
 				theEnumDiffs.put(name, new MappedEnumDiff(null, enumType));
 			} else {
 				Enum<?>[] codeValues = enumType.getEnumConstants();
+				EnumTypeMapping<E> mapping = new EnumTypeMapping<>(genericEnum, enumType);
+				theMappedEnums.put(name, mapping);
 				if (codeValues.length != genericEnum.getValues().size()) {
 					theEnumDiffs.put(name, new MappedEnumDiff(null, enumType));
 				} else {
@@ -379,6 +407,7 @@ public class EntityTypeSetMapping {
 					}
 				}
 			}
+			return genericEnum;
 		}
 	}
 

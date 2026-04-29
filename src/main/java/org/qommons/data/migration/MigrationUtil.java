@@ -10,14 +10,15 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.function.Consumer;
-import java.util.function.Supplier;
+import java.util.function.IntFunction;
+import java.util.regex.Pattern;
 
 import org.qommons.Named;
 import org.qommons.collect.BetterCollection;
 import org.qommons.collect.BetterMap;
 import org.qommons.collect.BetterMultiMap;
 import org.qommons.collect.BetterSortedSet;
+import org.qommons.collect.MultiEntryHandle;
 import org.qommons.collect.MultiMap;
 import org.qommons.data.impl.MigratableDataSet;
 import org.qommons.data.types.EntityField;
@@ -32,6 +33,7 @@ import org.qommons.data.values.DataSetModificationException;
 import org.qommons.data.values.GenericEntity;
 import org.qommons.data.values.GenericEntitySet;
 import org.qommons.ex.ExFunction;
+import org.qommons.io.CsvParser;
 import org.qommons.io.FilePosition;
 import org.qommons.io.TextParseException;
 
@@ -414,9 +416,12 @@ public class MigrationUtil {
 	public static FieldType parseFieldType(String text, EntityTypeSet types, String creatingEntity, FilePosition source,
 		ExFunction<String, ModifiableEntityType, MigrationException> uncreated) throws MigrationException {
 		int paramIdx = text.indexOf('<');
+		if (paramIdx < 0)
+			paramIdx = text.indexOf('{');
 		if (paramIdx >= 0) {
-			if (text.charAt(text.length() - 1) != '>')
-				throw new MigrationException("Terminating '>' expected", source);
+			int closeChar = text.charAt(paramIdx) + 2; // Weird, but this happens to work
+			if (text.charAt(text.length() - 1) != closeChar)
+				throw new MigrationException("Terminating '" + closeChar + "' expected", source);
 			String rawType = text.substring(0, paramIdx);
 			int commaIdx = text.indexOf(',', paramIdx + 1);
 			FieldType<?> firstType, secondType;
@@ -510,18 +515,20 @@ public class MigrationUtil {
 		throw new MigrationException("Unrecognized type '" + text + "'", source);
 	}
 
-	public static <F> F parseFieldValue(CharSequence text, FieldType<F> fieldType, GenericEntitySet entities, Supplier<FilePosition> source)
-		throws MigrationException {
+	public static <F> F parseFieldValue(CharSequence text, FieldType<F> fieldType, GenericEntitySet entities,
+		IntFunction<FilePosition> source) throws MigrationException {
 		if ("null".equals(text))
 			return null;
 		else if (fieldType instanceof EnumType) {
 			EnumType enumType = (EnumType) fieldType;
 			EnumValue value = enumType.getValue(text.toString());
 			if (value == null)
-				throw new MigrationException("No such enum value " + enumType + "." + text, source.get());
+				throw new MigrationException("No such enum value " + enumType + "." + text, source.apply(0));
 			return (F) value;
 		} else if (fieldType instanceof FieldType.SimpleType) {
 			return ((FieldType.SimpleType<F>) fieldType).parse(text.toString(), source);
+		} else if (fieldType instanceof EntityType) {
+			return (F) parseEntity((EntityType) fieldType, text, entities, source);
 		} else if (fieldType instanceof FieldType.CollectionType) {
 			return (F) parseCollection(text, (FieldType.CollectionType<?, ?>) fieldType, entities, source);
 		} else if (fieldType instanceof FieldType.MapType) {
@@ -529,72 +536,129 @@ public class MigrationUtil {
 		} else if (fieldType instanceof FieldType.MultiMapType) {
 			return (F) parseMultiMap(text, (FieldType.MultiMapType<?, ?, ?>) fieldType, entities, source);
 		} else
-			throw new IllegalStateException("Requested initial value parsing for unhandled type " + fieldType + " @" + source);
+			throw new IllegalStateException("Requested initial value parsing for unhandled type " + fieldType + " @" + source.apply(0));
+	}
+
+	private static final Pattern DOUBLE_COMMA = Pattern.compile(",,");
+
+	private static GenericEntity parseEntity(EntityType type, CharSequence text, GenericEntitySet entities,
+		IntFunction<FilePosition> source) throws MigrationException {
+		Object[] id = new Object[type.getIdFields().size()];
+		int i = 0;
+		int pos = 0, line = 0, col = 0;
+		for (EntityField<?> field : type.getIdFields()) {
+			CsvParser.ParsedCsvValue value;
+			try {
+				value = CsvParser.fromCsv(text, pos, line, col, ',');
+			} catch (TextParseException e) {
+				throw new MigrationException(e.getMessage(), source.apply(e.getErrorOffset()), e);
+			}
+			int fPos = pos;
+			id[i++] = parseFieldValue(value.parsed, field.getType(), entities, p -> source.apply(fPos + p));
+			pos = value.sourceEnd + 1; // Skip the delimiter
+			line = value.endLine;
+			col = value.endColumn;
+		}
+		GenericEntity found;
+		try {
+			found = entities.getEntity(type.getName(), id);
+		} catch (IOException e) {
+			throw new MigrationException("Unable to retrieve " + type.getName() + " with ID " + text.subSequence(0, pos), source.apply(0),
+				e);
+		}
+		if (found == null)
+			throw new MigrationException("No such " + type.getName() + " with ID " + text.subSequence(0, pos), source.apply(0));
+		return found;
 	}
 
 	private static final char NO_TERMINAL = (char) 0;
 
 	private static <E, C extends BetterCollection<E>> C parseCollection(CharSequence text, FieldType.CollectionType<E, C> fieldType,
-		GenericEntitySet entities, Supplier<FilePosition> source) throws MigrationException {
+		GenericEntitySet entities, IntFunction<FilePosition> source) throws MigrationException {
 		C collection = fieldType.createEmptyStructure();
-		StringBuilder valueStr = new StringBuilder();
-		for (int c = 0; c < text.length(); c++) {
-			c = MigrationUtil.parseComponentValue(text, c, fieldType.componentType, entities, source, ',', NO_TERMINAL, valueStr,
-				collection::add);
+		int start = 0, line = 0, col = 0;
+		while (start < text.length()) {
+			CsvParser.ParsedCsvValue csvValue;
+			try {
+				csvValue = CsvParser.fromCsv(text, start, line, col, ',');
+			} catch (TextParseException e) {
+				throw new MigrationException(e.getMessage(), source.apply(e.getErrorOffset()), e);
+			}
+			int fPos = start;
+			collection.add(parseFieldValue(csvValue.parsed, fieldType.componentType, entities, p -> source.apply(fPos + p)));
+			start = csvValue.sourceEnd + 1; // Skip the delimiter
+			line = csvValue.endLine;
+			col = csvValue.endColumn + 1;
 		}
 		return collection;
 	}
 
-	private static <F> int parseComponentValue(CharSequence text, int start, FieldType<F> type, GenericEntitySet entities,
-		Supplier<FilePosition> source, char terminal1, char terminal2, StringBuilder valueStr, Consumer<? super F> action)
-			throws MigrationException {
-		for (start++; start < text.length(); start++) {
-			char ch = text.charAt(start);
-			if (ch == terminal1 || ch == terminal2) {
-				if (start < text.length() - 1 && text.charAt(start) == ch) { // Escaped terminal
-					valueStr.append(ch);
-					start++;
-				} else { // End of value
-					action.accept(parseFieldValue(valueStr, type, entities, source));
-					valueStr.setLength(0);
-					return start;
-				}
-			} else
-				valueStr.append(ch);
-		}
-		action.accept(parseFieldValue(valueStr, type, entities, source));
-		valueStr.setLength(0);
-		return start;
-	}
-
 	private static <K, V, M extends BetterMap<K, V>> M parseMap(CharSequence text, FieldType.MapType<K, V, M> fieldType,
-		GenericEntitySet entities, Supplier<FilePosition> source) throws MigrationException {
+		GenericEntitySet entities, IntFunction<FilePosition> source) throws MigrationException {
 		M map = fieldType.createEmptyStructure();
-		StringBuilder valueStr = new StringBuilder();
-		K[] key = (K[]) new Object[1]; // Obviously not safe, but we don't know anything about K so this will work and make our life easier
-		for (int c = 0; c < text.length(); c++) {
-			c = parseComponentValue(text, c, fieldType.keyType, entities, source, '=', NO_TERMINAL, valueStr, k -> key[0] = k);
-			if (c == text.length())
-				throw new MigrationException("No '=' found for entry", source.get());
-			c = parseComponentValue(text, c + 1, fieldType.valueType, entities, source, ',', NO_TERMINAL, valueStr,
-				v -> map.put(key[0], v));
+		int start = 0, line = 0, col = 0;
+		while (start < text.length()) {
+			CsvParser.ParsedCsvValue csvValue;
+			try {
+				csvValue = CsvParser.fromCsv(text, start, line, col, '=');
+			} catch (TextParseException e) {
+				throw new MigrationException(e.getMessage(), source.apply(e.getErrorOffset()), e);
+			}
+			int keyPos = start;
+			K key = parseFieldValue(csvValue.parsed, fieldType.keyType, entities, p -> source.apply(keyPos + p));
+			start = csvValue.sourceEnd + 1; // Skip the delimiter
+			line = csvValue.endLine;
+			col = csvValue.endColumn + 1;
+
+			try {
+				csvValue = CsvParser.fromCsv(text, start, line, col, ',');
+			} catch (TextParseException e) {
+				throw new MigrationException(e.getMessage(), source.apply(e.getErrorOffset()), e);
+			}
+			int valuePos = start;
+			V value = parseFieldValue(csvValue.parsed, fieldType.valueType, entities, p -> source.apply(valuePos + p));
+			start = csvValue.sourceEnd + 1; // Skip the delimiter
+			line = csvValue.endLine;
+			col = csvValue.endColumn + 1;
+			map.put(key, value);
 		}
 		return map;
 	}
 
 	private static <K, V, M extends BetterMultiMap<K, V>> M parseMultiMap(CharSequence text, FieldType.MultiMapType<K, V, M> fieldType,
-		GenericEntitySet entities, Supplier<FilePosition> source) throws MigrationException {
+		GenericEntitySet entities, IntFunction<FilePosition> source) throws MigrationException {
 		M map = fieldType.createEmptyStructure();
-		StringBuilder valueStr = new StringBuilder();
-		Collection<V>[] valueColl = new Collection[1];
-		for (int c = 0; c < text.length(); c++) {
-			c = parseComponentValue(text, c, fieldType.keyType, entities, source, '=', NO_TERMINAL, valueStr,
-				k -> valueColl[0] = map.get(k));
-			if (c == text.length())
-				throw new MigrationException("No '=' found for entry", source.get());
-			do {
-				c = parseComponentValue(text, c + 1, fieldType.valueType, entities, source, ',', ';', valueStr, valueColl[0]::add);
-			} while (c < text.length() && text.charAt(c) == ',');
+		int start = 0, line = 0, col = 0;
+		while (start < text.length()) {
+			CsvParser.ParsedCsvValue csvValue;
+			try {
+				csvValue = CsvParser.fromCsv(text, start, line, col, '=');
+			} catch (TextParseException e) {
+				throw new MigrationException(e.getMessage(), source.apply(e.getErrorOffset()), e);
+			}
+			int keyPos = start;
+			K key = parseFieldValue(csvValue.parsed, fieldType.keyType, entities, p -> source.apply(keyPos + p));
+			start = csvValue.sourceEnd + 1; // Skip the delimiter
+			line = csvValue.endLine;
+			col = csvValue.endColumn + 1;
+
+			MultiEntryHandle<K, V> entry = map.getEntry(key);
+			while (start < text.length() && text.charAt(start) != ';') {
+				try {
+					csvValue = CsvParser.fromCsv(text, start, line, col, ',', ';');
+				} catch (TextParseException e) {
+					throw new MigrationException(e.getMessage(), source.apply(e.getErrorOffset()), e);
+				}
+				int valuePos = start;
+				V value = parseFieldValue(csvValue.parsed, fieldType.valueType, entities, p -> source.apply(valuePos + p));
+				start = csvValue.sourceEnd + 1; // Skip the delimiter
+				line = csvValue.endLine;
+				col = csvValue.endColumn + 1;
+				if (entry == null)
+					entry = map.getOrPutEntry(key, __ -> Collections.singleton(value), null, null, false, null, null);
+				else
+					entry.getValues().add(value);
+			}
 		}
 		return map;
 	}
@@ -605,9 +669,9 @@ public class MigrationUtil {
 		else if (type instanceof FieldType.SimpleType)
 			((FieldType.SimpleType<Object>) type).print(str, value);
 		else if (type instanceof EnumType)
-			str.append(value);
+			str.append(((EnumValue) value).getName());
 		else if (type instanceof EntityType)
-			printEntityId(str, (GenericEntity) type);
+			printEntityId(str, (GenericEntity) value);
 		else if (type instanceof FieldType.CollectionType) {
 			printCollection(str, (FieldType.CollectionType<?, ?>) type, (Collection<?>) value);
 		} else if (type instanceof FieldType.MapType) {
@@ -625,7 +689,9 @@ public class MigrationUtil {
 				first = false;
 			else
 				str.append(',');
+			int preLen = str.length();
 			printFieldValue(str, field.getType(), entity.get(field));
+			CsvParser.escapeCsv(str, preLen, str.length(), ',');
 		}
 	}
 
@@ -638,7 +704,7 @@ public class MigrationUtil {
 				str.append(',');
 			int preLen = str.length();
 			printFieldValue(str, type.componentType, v);
-			escape(str, preLen, ',', ",,");
+			CsvParser.escapeCsv(str, preLen, str.length(), ',');
 		}
 	}
 
@@ -651,11 +717,11 @@ public class MigrationUtil {
 				str.append(',');
 			int preLen = str.length();
 			printFieldValue(str, type.keyType, entry.getKey());
-			escape(str, preLen, '=', "==");
+			CsvParser.escapeCsv(str, preLen, str.length(), '=');
 			str.append('=');
 			preLen = str.length();
 			printFieldValue(str, type.valueType, entry.getValue());
-			escape(str, preLen, ',', ",,");
+			CsvParser.escapeCsv(str, preLen, str.length(), ',');
 		}
 	}
 
@@ -668,7 +734,7 @@ public class MigrationUtil {
 				str.append(';');
 			int preLen = str.length();
 			printFieldValue(str, type.keyType, entry.getKey());
-			escape(str, preLen, '=', "==");
+			CsvParser.escapeCsv(str, preLen, str.length(), '=');
 			str.append('=');
 			boolean firstV = true;
 			for (Object v : entry.getValues()) {
@@ -678,18 +744,7 @@ public class MigrationUtil {
 					str.append(',');
 				preLen = str.length();
 				printFieldValue(str, type.valueType, v);
-				escape(str, preLen, ',', ",,");
-				escape(str, preLen, ';', ";;");
-			}
-		}
-	}
-
-	private static void escape(StringBuilder str, int start, char ch, String replacement) {
-		for (int c = start; c < str.length(); c++) {
-			if (str.charAt(c) == ch) {
-				str.setCharAt(c, replacement.charAt(0));
-				str.insert(c + 1, replacement, 1, replacement.length());
-				c += replacement.length() - 1;
+				CsvParser.escapeCsv(str, preLen, str.length(), ',', ';');
 			}
 		}
 	}

@@ -22,14 +22,14 @@ public interface GenericEntity {
 		Object[] id = new Object[idFields.size()];
 		int i = 0;
 		for (EntityField<?> field : idFields)
-			id[i] = get(field);
+			id[i++] = get(field);
 		return id;
 	}
 
 	default int compareToId(Object[] id) {
 		int i = 0;
 		for (EntityField<?> field : getType().getIdFields()) {
-			int comp = ((EntityField<Object>) field).getType().compare(id[i], get(field));
+			int comp = ((EntityField<Object>) field).getType().compare(get(field), id[i]);
 			if (comp != 0)
 				return comp;
 			i++;

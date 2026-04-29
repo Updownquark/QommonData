@@ -9,7 +9,10 @@ import java.util.Set;
 import java.util.function.Function;
 
 import org.qommons.IterableUtils;
+import org.qommons.Lockable.CoreId;
 import org.qommons.StringUtils;
+import org.qommons.ThreadConstraint;
+import org.qommons.Transaction;
 import org.qommons.collect.BetterCollection;
 import org.qommons.collect.BetterMultiMap;
 import org.qommons.collect.BetterSortedList.SortedSearchFilter;
@@ -74,6 +77,26 @@ public class InMemoryEntitySet implements GenericEntitySet {
 
 	protected CollectionLockingStrategy getLock() {
 		return theLock;
+	}
+
+	@Override
+	public Transaction lock(boolean write, Object cause) {
+		return theLock.lock(write, cause);
+	}
+
+	@Override
+	public Transaction tryLock(boolean write, Object cause) {
+		return theLock.tryLock(write, cause);
+	}
+
+	@Override
+	public CoreId getCoreId() {
+		return theLock.getCoreId();
+	}
+
+	@Override
+	public ThreadConstraint getThreadConstraint() {
+		return theLock.getThreadConstraint();
 	}
 
 	public Set<EntityType> getAffectedEntities() {
@@ -219,6 +242,8 @@ public class InMemoryEntitySet implements GenericEntitySet {
 		EntityType type = entity.getType();
 		BetterSortedSet<GenericEntity> entities = getInternalEntities(type.getRootType());
 		CollectionElement<GenericEntity> added = entities.addElement(entity, false);
+		if (added == null)
+			throw new IllegalArgumentException("An entity matching " + entity + " already exists in this set");
 		for (EntityField<?> field : type.getIdFields()) {
 			if (field.getMappingReference() != null) {
 				GenericEntity value = (GenericEntity) entity.get(field);
@@ -270,10 +295,8 @@ public class InMemoryEntitySet implements GenericEntitySet {
 		BetterSortedSet<GenericEntity> entities = getInternalEntities(entity.getType().getRootType());
 		if (entities == null)
 			throw new IllegalStateException("Entity type " + entity.getType() + " has been deleted from this data source");
-		else if (entities.remove(entity))
-			entityAffected(entity.getType());
-		else
-			throw new IllegalArgumentException("This entity has already been deleted");
+		entities.remove(entity);
+		entityAffected(entity.getType());
 	}
 
 	protected void entityAffected(GenericEntity entity) {
