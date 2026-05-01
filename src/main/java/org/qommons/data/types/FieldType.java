@@ -50,6 +50,16 @@ public interface FieldType<F> extends Comparator<F> {
 	 */
 	public static final SelfReferenceType SELF = SelfReferenceType.INSTANCE;
 
+	public static final FieldType<Blob> BLOB = new BlobType();
+
+	default boolean isValidKey() {
+		return true;
+	}
+
+	default boolean isSortable() {
+		return true;
+	}
+
 	boolean isInstance(Object value);
 
 	boolean isAssignableFrom(FieldType<?> other);
@@ -775,6 +785,54 @@ public interface FieldType<F> extends Comparator<F> {
 				str.append("Sorted");
 			str.append("MultiMap");
 			return str.append('<').append(keyType).append(", ").append(valueType).append('>').toString();
+		}
+	}
+
+	public static class BlobType implements FieldType<Blob> {
+		private BlobType() {
+		}
+
+		@Override
+		public boolean isValidKey() {
+			return false;
+		}
+
+		@Override
+		public boolean isSortable() {
+			return false;
+		}
+
+		@Override
+		public int compare(Blob o1, Blob o2) {
+			throw new IllegalStateException("Blobs are not sortable");
+		}
+
+		@Override
+		public boolean isInstance(Object value) {
+			return value instanceof Blob;
+		}
+
+		@Override
+		public boolean isAssignableFrom(FieldType<?> other) {
+			return other == this;
+		}
+
+		@Override
+		public Blob convert(Object value, FieldType<?> valueType) {
+			if (valueType == this)
+				return (Blob) value;
+			else
+				throw new IllegalArgumentException("Invalid conversion: " + valueType + " to " + this);
+		}
+
+		@Override
+		public <FT extends FieldType<?>> FT containsTypeLike(Function<? super FieldType<?>, FT> test) {
+			return test.apply(this);
+		}
+
+		@Override
+		public String toString() {
+			return "blob";
 		}
 	}
 }

@@ -26,6 +26,7 @@ import org.qommons.collect.BetterSortedList;
 import org.qommons.collect.BetterSortedMap;
 import org.qommons.collect.BetterSortedMultiMap;
 import org.qommons.collect.BetterSortedSet;
+import org.qommons.data.types.Blob;
 import org.qommons.data.types.EntityField;
 import org.qommons.data.types.EntityType;
 import org.qommons.data.types.EntityTypeSet;
@@ -339,6 +340,8 @@ public class EntityTypeSetMapping {
 			if (type instanceof Class) {
 				if (((Class<?>) type).isEnum()) {
 					return mapEnum((Class<? extends Enum<?>>) type);
+				} else if (type == Blob.class) {
+					return FieldType.BLOB;
 				} else {
 					FieldType.SimpleType<?> simple = FieldType.SimpleType.get((Class<?>) type);
 					if (simple != null)
@@ -346,9 +349,7 @@ public class EntityTypeSetMapping {
 					T entity = theEntityMapping.isEntity((Class<?>) type);
 					if (entity != null)
 						return mapEntity((Class<?>) type, entity);
-					else {
-						return null;
-					}
+					return null;
 				}
 			} else if (type instanceof ParameterizedType) {
 				ParameterizedType pt = (ParameterizedType) type;

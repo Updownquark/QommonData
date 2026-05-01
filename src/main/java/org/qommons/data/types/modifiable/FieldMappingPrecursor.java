@@ -84,6 +84,8 @@ public class FieldMappingPrecursor<K, S> {
 			this.keyField = (ModifiableEntityField<K>) target.getField(key.toString());
 			if (this.keyField == null)
 				throw new QonfigInterpretationException("No such key field " + target + "." + key, key);
+			else if (!keyField.getType().isValidKey())
+				throw new QonfigInterpretationException("Key field " + keyField + " cannot be used as a map key", key);
 		}
 		if (index == null)
 			this.indexField = null;
@@ -91,6 +93,8 @@ public class FieldMappingPrecursor<K, S> {
 			this.indexField = (ModifiableEntityField<Integer>) target.getField(index.toString());
 			if (this.indexField == null)
 				throw new QonfigInterpretationException("No such index field " + target + "." + index, index);
+			else if (indexField.getType() != FieldType.SimpleType.INT)
+				throw new QonfigInterpretationException("index field must be typed int: " + indexField, index);
 		}
 		if (sortBy == null)
 			this.sortByField = null;
@@ -98,6 +102,8 @@ public class FieldMappingPrecursor<K, S> {
 			this.sortByField = (ModifiableEntityField<S>) target.getField(sortBy.toString());
 			if (this.sortByField == null)
 				throw new QonfigInterpretationException("No such sort-by field " + target + "." + sortBy, sortBy);
+			else if (!sortByField.getType().isSortable())
+				throw new QonfigInterpretationException("Sort-by field " + sortByField + " is not sortable", key);
 		}
 
 		if (mappedReferenceField.getType() != entity)
@@ -117,14 +123,6 @@ public class FieldMappingPrecursor<K, S> {
 		} else if (keyField != null)
 			throw new QonfigInterpretationException(entity + "." + parentFieldName + ": key is only valid for map or multi-map field types",
 				key);
-
-		if (indexField != null) {
-			if (!indexField.getOwner().isAssignableFrom(target))
-				throw new QonfigInterpretationException(
-					"The owner of index field " + indexField + " should be the entity type of the field (" + target + ")", index);
-			else if (indexField.getType() != FieldType.SimpleType.INT)
-				throw new QonfigInterpretationException("index field must be typed int: " + indexField, index);
-		}
 	}
 
 	public <F> FieldMapping<F, K, S> createMapping(ModifiableEntityField<F> field) {

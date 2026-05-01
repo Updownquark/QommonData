@@ -2,6 +2,7 @@ package org.qommons.data.migration;
 
 import java.io.BufferedWriter;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.OutputStreamWriter;
 import java.io.Writer;
 import java.nio.charset.StandardCharsets;
@@ -21,6 +22,7 @@ import java.util.regex.Pattern;
 import org.qommons.IterableUtils;
 import org.qommons.Named;
 import org.qommons.StringUtils;
+import org.qommons.StringUtils.ByteIterator;
 import org.qommons.collect.BetterCollection;
 import org.qommons.collect.BetterHashSet;
 import org.qommons.collect.BetterMap;
@@ -36,6 +38,7 @@ import org.qommons.config.QonfigParseException;
 import org.qommons.data.impl.MigratableDataSet;
 import org.qommons.data.migration.SchemaMigration.AddEntityMigration;
 import org.qommons.data.migration.SchemaMigration.AddEnumMigration;
+import org.qommons.data.types.Blob;
 import org.qommons.data.types.EntityField;
 import org.qommons.data.types.EntityType;
 import org.qommons.data.types.EntityTypeSet;
@@ -55,6 +58,7 @@ import org.qommons.io.LocatedFilePosition;
 import org.qommons.io.LocatedPositionedContent;
 import org.qommons.io.PositionedContent;
 import org.qommons.io.TextParseException;
+import org.qommons.io.UnfailingOutputStream;
 import org.qommons.io.XmlSerialWriter;
 
 public class MigrationUtil {
@@ -372,10 +376,12 @@ public class MigrationUtil {
 	}
 
 	private static boolean fieldTypesEqual(FieldType<?> leftType, FieldType<?> rightType) {
-		if (leftType.getClass() != rightType.getClass())
+		if (leftType == rightType)
+			return true;
+		else if (leftType.getClass() != rightType.getClass())
 			return false;
-		else if (leftType instanceof FieldType.SimpleType)
-			return leftType.equals(rightType);
+		else if (leftType instanceof FieldType.SimpleType || leftType == FieldType.BLOB)
+			return false;
 		else if (leftType instanceof FieldType.ParameterizedType) {
 			FieldType.ParameterizedType<?> leftPT = (FieldType.ParameterizedType<?>) leftType;
 			FieldType.ParameterizedType<?> rightPT = (FieldType.ParameterizedType<?>) rightType;
@@ -507,6 +513,8 @@ public class MigrationUtil {
 			return SimpleType.INSTANT;
 		case "Duration":
 			return SimpleType.DURATION;
+		case "blob":
+			return FieldType.BLOB;
 		}
 		if (text.equals(creatingEntity))
 			return FieldType.SELF;
@@ -538,6 +546,30 @@ public class MigrationUtil {
 			return ((FieldType.SimpleType<F>) fieldType).parse(text.toString(), source);
 		} else if (fieldType instanceof EntityType) {
 			return (F) parseEntity((EntityType) fieldType, text, entities, source);
+		} else if (fieldType == FieldType.BLOB) {
+			Blob.InMemoryBlob blob = new Blob.InMemoryBlob();
+			try (UnfailingOutputStream out = blob.write()) {
+				for (int c = 0; c < text.length(); c++) {
+					int hexDigit;
+					try {
+						hexDigit = StringUtils.hexDigit(text.charAt(c));
+					} catch (IllegalArgumentException e) {
+						throw new QonfigInterpretationException(e.getMessage(), source.apply(c), 1);
+					}
+					c++;
+					if (c == text.length())
+						throw new QonfigInterpretationException("An even number of hex characters was expected", source.apply(c), 0);
+					int hexByte = hexDigit << 4;
+					try {
+						hexDigit = StringUtils.hexDigit(text.charAt(c));
+					} catch (IllegalArgumentException e) {
+						throw new QonfigInterpretationException(e.getMessage(), source.apply(c), 1);
+					}
+					hexByte |= hexDigit;
+					out.write(hexByte);
+				}
+			}
+			return (F) blob;
 		} else if (fieldType instanceof FieldType.CollectionType) {
 			return (F) parseCollection(text, (FieldType.CollectionType<?, ?>) fieldType, entities, source);
 		} else if (fieldType instanceof FieldType.MapType) {
@@ -682,7 +714,13 @@ public class MigrationUtil {
 			str.append(((EnumValue) value).getName());
 		else if (type instanceof EntityType)
 			printEntityId(str, (GenericEntity) value);
-		else if (type instanceof FieldType.CollectionType) {
+		else if (type == FieldType.BLOB) {
+			try (InputStream in = ((Blob) value).read()) {
+				StringUtils.encodeHex().format(ByteIterator.of(in), new StringUtils.AppendableWriter<>(str), null);
+			} catch (IOException e) {
+				throw new IllegalStateException("Could not print BLOB data", e);
+			}
+		} else if (type instanceof FieldType.CollectionType) {
 			printCollection(str, (FieldType.CollectionType<?, ?>) type, (Collection<?>) value);
 		} else if (type instanceof FieldType.MapType) {
 			printMap(str, (FieldType.MapType<?, ?, ?>) type, (Map<?, ?>) value);
@@ -692,7 +730,9 @@ public class MigrationUtil {
 			throw new IllegalStateException("Requested value printing for unhandled type " + type);
 	}
 
-	public static void printEntityId(StringBuilder str, GenericEntity entity) {
+	public static StringBuilder printEntityId(StringBuilder str, GenericEntity entity) {
+		if (str == null)
+			str = new StringBuilder();
 		boolean first = true;
 		for (EntityField<?> field : entity.getType().getIdFields()) {
 			if (first)
@@ -703,6 +743,7 @@ public class MigrationUtil {
 			printFieldValue(str, field.getType(), entity.get(field));
 			CsvParser.escapeCsv(str, preLen, str.length(), ',');
 		}
+		return str;
 	}
 
 	public static void printCollection(StringBuilder str, FieldType.CollectionType<?, ?> type, Collection<?> value) {
@@ -862,7 +903,7 @@ public class MigrationUtil {
 						for (EntityField<?> field : entityType.getLocalFields()) {
 							entityXml.addChild("field", fieldXml -> {
 								fieldXml//
-									.addAttribute("field", field.getName())//
+								.addAttribute("field", field.getName())//
 								.addAttribute("type", field.getType().toString());
 								if (field.getMapping() != null) {
 									fieldXml.addChild("mapped", mappingXml -> {

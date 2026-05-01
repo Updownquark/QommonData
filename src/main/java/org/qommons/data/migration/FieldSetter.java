@@ -1,13 +1,16 @@
 package org.qommons.data.migration;
 
+import java.io.IOException;
 import java.util.Collection;
 import java.util.function.BiConsumer;
 
 import org.qommons.config.QonfigInterpretationException;
+import org.qommons.data.types.Blob;
 import org.qommons.data.types.EntityType;
 import org.qommons.data.types.EnumType;
 import org.qommons.data.types.FieldType;
 import org.qommons.data.values.GenericEntity;
+import org.qommons.io.FileUtils;
 import org.qommons.io.LocatedPositionedContent;
 
 public interface FieldSetter<F, T> extends BiConsumer<GenericEntity, F>, FieldResolving<T> {
@@ -35,6 +38,24 @@ public interface FieldSetter<F, T> extends BiConsumer<GenericEntity, F>, FieldRe
 					GenericEntity target = getTargetEntity(entity2);
 					if (target != null)
 						target.set(getTargetField(), fromValue);
+				}
+			};
+		} else if (type == FieldType.BLOB) {
+			if (!type.isAssignableFrom(fromType))
+				throw new QonfigInterpretationException(
+					"Type " + fromType + " of " + entity + "." + from + " cannot be copied to type " + type + " of " + entity + "." + to,
+					to);
+			return new Abstract<F, T>(toPath) {
+				@Override
+				public void accept(GenericEntity entity2, F fromValue) {
+					GenericEntity target = getTargetEntity(entity2);
+					if (target != null) {
+						try {
+							FileUtils.copy(((Blob) fromValue)::read, ((Blob) target.get(getTargetField()))::write);
+						} catch (IOException e) {
+							throw new IllegalStateException("Failed to copy blob data", e);
+						}
+					}
 				}
 			};
 		} else if (type instanceof FieldType.CollectionType) {

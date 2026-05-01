@@ -258,7 +258,7 @@ public class ModifiableEntityTypeSet implements EntityTypeSet {
 	}
 
 	private <T, F extends FieldType<T>> F copyFieldType(F sourceType) throws QonfigInterpretationException {
-		if (sourceType instanceof FieldType.SimpleType)
+		if (sourceType instanceof FieldType.SimpleType || sourceType == FieldType.BLOB)
 			return sourceType;
 		else if (sourceType instanceof EnumType)
 			return (F) getEnumType(((EnumType) sourceType).getName());

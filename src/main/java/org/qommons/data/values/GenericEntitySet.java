@@ -96,8 +96,10 @@ public interface GenericEntitySet extends Transactable {
 		}
 
 		private static boolean typeMatches(FieldType<?> srcType, FieldType<?> destType) {
-			if (srcType instanceof FieldType.SimpleType)
-				return srcType == destType;
+			if (srcType == destType)
+				return true;
+			else if (srcType instanceof FieldType.SimpleType || srcType == FieldType.BLOB)
+				return false;
 			else if (srcType instanceof EnumType)
 				return destType instanceof EnumType && ((EnumType) srcType).getName().equals(((EnumType) destType).getName());
 			else if (srcType instanceof EntityType)
@@ -122,7 +124,7 @@ public interface GenericEntitySet extends Transactable {
 			EntityField<?> destField) throws IOException {
 			F srcValue = srcEntity.get(srcField);
 			F destValue;
-			if (srcValue == null || srcField.getType() instanceof FieldType.SimpleType) {
+			if (srcValue == null || srcField.getType() instanceof FieldType.SimpleType || srcField.getType() == FieldType.BLOB) {
 				destValue = srcValue;
 				destEntity.set(destField, destValue);
 			} else if (srcField.getType() instanceof EnumType) {

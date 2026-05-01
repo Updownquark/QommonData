@@ -218,7 +218,7 @@ public class VersionedDataScheme {
 					forEach.forDataSetFile(file, path);
 				} else {
 					try {
-						if (thePersistence.mayBePersistedData(file, entityTypes)) {
+						if (thePersistence.mayBePersistedData(file, persistenceDir, entityTypes)) {
 							path.append(file.getName());
 							forEach.forDataSetFile(file, path);
 						}
