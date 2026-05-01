@@ -103,7 +103,7 @@ public class QDMigrationCore implements QonfigInterpretation {
 		interpreter.createWith("rename-value", RenameFieldMigration.class, RenameFieldMigration::new);
 		interpreter.createWith("for-each", ForEachMigration.class, ForEachMigration::new);
 		interpreter.createWith("copy", CopyMigrator.class, CopyMigrator::new);
-		interpreter.createWith("Set", SetMigrator.class, SetMigrator::new);
+		interpreter.createWith("set", SetMigrator.class, SetMigrator::new);
 		return interpreter;
 	}
 
