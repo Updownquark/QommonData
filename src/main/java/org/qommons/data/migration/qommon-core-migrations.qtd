@@ -126,6 +126,10 @@
 			<attribute name="from" type="identifier-path" />
 			<attribute name="to" type="identifier-path" />
 		</element-def>
+		<element-def name="set" extends="single-entity-migrator">
+			<attribute name="field" type="identifier-path" />
+			<attribute name="value" type="string" />
+		</element-def>
 		
 		<element-def name="conditional-migration" extends="migration">
 			<child-def name="precludes" type="precludes" min="0" max="inf" />

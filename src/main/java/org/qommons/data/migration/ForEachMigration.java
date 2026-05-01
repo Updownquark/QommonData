@@ -52,7 +52,7 @@ public class ForEachMigration implements Migration {
 		if (entityType == null)
 			throw new DataSetModificationException("No such entity type '" + entityName + "'");
 		for (SingleEntityCustomMigrator action : actions) {
-			action.prepare(entityType);
+			action.prepare(dataSet, entityType, session);
 		}
 		for (GenericEntity entity : dataSet.getEntities(entityType.getName())) {
 			for (SingleEntityCustomMigrator action : actions) {
