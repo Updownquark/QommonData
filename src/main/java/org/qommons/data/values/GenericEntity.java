@@ -68,4 +68,6 @@ public interface GenericEntity {
 	String canDelete();
 
 	void delete();
+
+	boolean isDeleted();
 }

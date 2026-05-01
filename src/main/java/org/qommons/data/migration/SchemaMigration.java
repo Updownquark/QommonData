@@ -1,20 +1,23 @@
 package org.qommons.data.migration;
 
 import java.io.IOException;
+import java.util.Collection;
 import java.util.Collections;
-import java.util.HashMap;
 import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
-import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
 import org.qommons.ArrayUtils;
+import org.qommons.QommonsUtils;
+import org.qommons.collect.MultiMap;
+import org.qommons.config.QonfigInterpretationException;
+import org.qommons.config.QonfigInterpreterCore;
+import org.qommons.config.QonfigInterpreterCore.CoreSession;
 import org.qommons.data.impl.MigratableDataSet;
 import org.qommons.data.types.EntityField;
 import org.qommons.data.types.EntityType;
-import org.qommons.data.types.EnumType;
 import org.qommons.data.types.EnumValue;
 import org.qommons.data.types.FieldType;
 import org.qommons.data.types.modifiable.FieldMappingPrecursor;
@@ -25,18 +28,21 @@ import org.qommons.data.types.modifiable.ModifiableEnumType;
 import org.qommons.data.types.modifiable.ModifiableEnumValue;
 import org.qommons.data.values.DataSetModificationException;
 import org.qommons.data.values.GenericEntity;
-import org.qommons.data.values.GenericEntitySet;
 import org.qommons.ex.ExFunction;
-import org.qommons.io.FilePosition;
+import org.qommons.io.LocatedPositionedContent;
+import org.qommons.io.PositionedContent;
 import org.qommons.io.TextParseException;
 
 public abstract class SchemaMigration implements Migration {
-	private final MigrationSet theMigrationSet;
-	private final FilePosition thePosition;
+	public static final Set<String> RESERVED_TYPES = QommonsUtils.unmodifiableDistinctCopy("boolean", "char", "byte", "short", "int",
+		"long", "float", "double", "String");
 
-	protected SchemaMigration(MigrationSet migrationSet, FilePosition position) {
-		theMigrationSet = migrationSet;
-		thePosition = position;
+	private final MigrationSet theMigrationSet;
+	private final LocatedPositionedContent thePosition;
+
+	protected SchemaMigration(QonfigInterpreterCore.CoreSession session) throws QonfigInterpretationException {
+		theMigrationSet = (MigrationSet) session.get(MIGRATION_SET_KEY);
+		thePosition = session.getElement().getFilePosition();
 	}
 
 	@Override
@@ -45,212 +51,210 @@ public abstract class SchemaMigration implements Migration {
 	}
 
 	@Override
-	public FilePosition getPosition() {
+	public LocatedPositionedContent getPosition() {
 		return thePosition;
 	}
 
-	public void applyToSchema(ModifiableEntityTypeSet types) throws MigrationException {
-		validate(types, null); // All sub-types must handle null validator map
-	}
+	public abstract Object applySchemaChange(ModifiableEntityTypeSet entities) throws QonfigInterpretationException;
 
 	public static abstract class EntityTypeMigration extends SchemaMigration {
-		public final String entityName;
+		public final LocatedPositionedContent entityName;
 
-		protected EntityTypeMigration(MigrationSet migrationSet, FilePosition position, String entityName) {
-			super(migrationSet, position);
-			this.entityName = entityName;
-		}
-
-		public Set<String> getAffectedEntities() {
-			return Collections.singleton(entityName);
-		}
-
-		public Map<String, Set<String>> getRequiredEntitiesAndFields() {
-			return Collections.emptyMap();
+		protected EntityTypeMigration(QonfigInterpreterCore.CoreSession session) throws QonfigInterpretationException {
+			super(session);
+			if (this instanceof AddFieldMigration) {
+				AddEntityMigration addEntity = (AddEntityMigration) session.get(AddEntityMigration.ADDING_ENTITY);
+				if (addEntity != null)
+					entityName = addEntity.entityName;
+				else
+					entityName = session.attributes().get("entity").getLocatedContent();
+			} else
+				entityName = session.attributes().get("entity").getLocatedContent();
+			if (RESERVED_TYPES.contains(entityName))
+				throw new QonfigInterpretationException("'" + entityName + "' is a reserved type name", entityName);
 		}
 	}
 
 	public static class AddEntityMigration extends EntityTypeMigration {
-		public final Set<String> superTypes;
-		public final Set<String> idFieldNames;
+		public static final String ADDING_ENTITY = "Adding Entity";
+
+		public final Set<LocatedPositionedContent> superTypes;
+		public final Set<LocatedPositionedContent> idFieldNames;
 		public final Map<String, AddFieldMigration> fields;
 
-		public AddEntityMigration(MigrationSet migrationSet, FilePosition position, String entityName, Set<String> superTypes,
-			Set<String> idFieldNames, List<AddFieldMigration> fields) {
-			super(migrationSet, position, entityName);
-			this.superTypes = superTypes;
-			this.idFieldNames = idFieldNames;
-			Map<String, AddFieldMigration> myFields = new HashMap<>();
-			for (AddFieldMigration field : fields)
-				myFields.put(field.fieldName, field);
-			this.fields = Collections.unmodifiableMap(myFields);
-		}
+		AddEntityMigration(QonfigInterpreterCore.CoreSession session) throws QonfigInterpretationException {
+			super(session);
+			LocatedPositionedContent superTypeStr = session.attributes().get("super").getLocatedContent();
+			LocatedPositionedContent idFieldsStr = session.attributes().get("id").getLocatedContent();
+			if (superTypeStr != null) {
+				if (idFieldsStr != null)
+					throw new QonfigInterpretationException("Entity types with a super type must inherit their super type's id",
+						idFieldsStr);
+				Set<LocatedPositionedContent> supers = new LinkedHashSet<>();
+				PositionedContent.split(superTypeStr, ',', supers::add);
+				superTypes = Collections.unmodifiableSet(supers);
+			} else {
+				superTypes = Collections.emptySet();
+				if (idFieldsStr == null)
+					throw new QonfigInterpretationException("New entity types must have either a super type or id fields",
+						session.getElement().getFilePosition());
+			}
 
-		@Override
-		public Set<String> getAffectedEntities() {
-			return Collections.emptySet();
+			Map<String, AddFieldMigration> entityFields = new LinkedHashMap<>();
+			session.put(ADDING_ENTITY, this);
+			for (QonfigInterpreterCore.CoreSession fieldSession : session.forChildren("field")) {
+				AddFieldMigration field = fieldSession.interpret(AddFieldMigration.class);
+				entityFields.put(field.fieldName.toString(), field);
+			}
+			fields = Collections.unmodifiableMap(entityFields);
+			if (idFieldsStr != null) {
+				Set<LocatedPositionedContent> idFields = new LinkedHashSet<>();
+				int idCount = PositionedContent.split(idFieldsStr, ',', id -> {
+					AddFieldMigration idField = entityFields.get(id.toString());
+					if (idField == null)
+						throw new QonfigInterpretationException("ID field '" + id + "' not declared", id);
+					else if (idField.mapping != null)
+						throw new QonfigInterpretationException("Mapped field '" + id + "' cannot be used as an ID field", id);
+					idFields.add(id);
+				});
+				if (idCount == 0)
+					throw new QonfigInterpretationException("add-entity.id cannot be empty", idFieldsStr);
+				idFieldNames = QommonsUtils.unmodifiableDistinctCopy(idFields);
+			} else
+				idFieldNames = Collections.emptySet();
+
+			SchemaHistory history = session.get(SchemaHistory.HISTORY, SchemaHistory.class);
+			if (history != null)
+				applySchemaChange(history.getTypeSet());
 		}
 
 		public ModifiableEntityType createEntityType(ModifiableEntityTypeSet entities,
-			ExFunction<String, ModifiableEntityType, MigrationException> uncreated) throws MigrationException {
+			ExFunction<String, ModifiableEntityType, QonfigInterpretationException> uncreated) throws QonfigInterpretationException {
 			ModifiableEntityType entityType;
 			if (superTypes.isEmpty()) {
-				Map<String, FieldType<?>> ids = new LinkedHashMap<>();
-				for (String id : idFieldNames) {
-					FieldType<?> type = MigrationUtil.parseFieldType(fields.get(id).type, entities, entityName, getPosition(), uncreated);
+				Map<LocatedPositionedContent, FieldType<?>> ids = new LinkedHashMap<>();
+				for (LocatedPositionedContent id : idFieldNames) {
+					String fieldName = id.toString();
+					FieldType<?> type = MigrationUtil.parseFieldType(fields.get(fieldName).type, entities, entityName, uncreated);
 					if (type instanceof FieldType.ParameterizedType)
-						throw new MigrationException("An entity ID field (" + id + ") cannot be a parameterized type (" + type + ")",
-							getPosition());
+						throw new QonfigInterpretationException(
+							"An entity ID field (" + fieldName + ") cannot be a parameterized type (" + type + ")", id);
 					ids.put(id, type);
 				}
-				entityType = entities.createEntityType(entityName, ids, getPosition());
+				entityType = entities.createEntityType(entityName, ids);
 			} else {
 				ModifiableEntityType[] superEntityTypes = new ModifiableEntityType[superTypes.size()];
 				int s = 0;
-				for (String sup : superTypes) {
-					superEntityTypes[s] = entities.getEntityType(sup);
+				for (LocatedPositionedContent sup : superTypes) {
+					String superName = sup.toString();
+					superEntityTypes[s] = entities.getEntityType(superName);
 					if (superEntityTypes[s] == null)
-						throw new MigrationException("No such entity type found for super: " + sup, getPosition());
+						throw new QonfigInterpretationException("No such entity type found for super: " + superName, sup);
 					s++;
 				}
-				entityType = entities.createEntityType(entityName, superEntityTypes, getPosition());
+				entityType = entities.createEntityType(entityName, superEntityTypes);
 			}
 			return entityType;
 		}
 
-		private ModifiableEntityType applySchemaChange(ModifiableEntityTypeSet entities) throws MigrationException {
+		@Override
+		public ModifiableEntityType applySchemaChange(ModifiableEntityTypeSet entities) throws QonfigInterpretationException {
 			ModifiableEntityType entityType = createEntityType(entities, null);
 			for (AddFieldMigration field : fields.values()) {
 				if (!idFieldNames.contains(field.fieldName))
-					field.addField(entityType);
+					field.addField(entityType, true);
 			}
 			return entityType;
 		}
 
 		@Override
-		public void validate(ModifiableEntityTypeSet entities, Map<String, CustomMigrationComponent> migrators) throws MigrationException {
-			applySchemaChange(entities);
-		}
-
-		@Override
-		public void apply(MigratableDataSet dataSet, Map<String, CustomMigrationComponent> migrators)
-			throws MigrationException, DataSetModificationException {
+		public void apply(MigratableDataSet dataSet, MigrationSession session)
+			throws IOException, TextParseException, DataSetModificationException {
 			ModifiableEntityType entityType = applySchemaChange(dataSet.getTypes());
 			dataSet.entityTypeCreated(entityType);
 		}
 	}
 
 	public static class RemoveEntityMigration extends EntityTypeMigration {
-		public final EntityMove moveTo;
+		public final EntityMoveMigrator moveTo;
 
-		public RemoveEntityMigration(MigrationSet migrationSet, FilePosition position, String entityName, EntityMove moveTo) {
-			super(migrationSet, position, entityName);
-			this.moveTo = moveTo;
+		public RemoveEntityMigration(QonfigInterpreterCore.CoreSession session) throws QonfigInterpretationException {
+			super(session);
+			QonfigInterpreterCore.CoreSession moveToSession = session.forChildren("moveTo").peekFirst();
+			moveTo = moveToSession == null ? null : moveToSession.interpret(EntityMoveMigrator.class);
+			SchemaHistory history = session.get(SchemaHistory.HISTORY, SchemaHistory.class);
+			if (history != null)
+				applySchemaChange(history.getTypeSet());
 		}
 
 		@Override
-		public Set<String> getAffectedEntities() {
-			if (moveTo == null)
-				return super.getAffectedEntities();
-			Set<String> affected = new LinkedHashSet<>(getAffectedEntities());
-			affected.addAll(moveTo.affectedEntities);
-			return affected;
-		}
+		public ModifiableEntityType applySchemaChange(ModifiableEntityTypeSet types) throws QonfigInterpretationException {
+			ModifiableEntityType entity = types.getEntityType(entityName.toString());
+			if (entity == null)
+				throw new QonfigInterpretationException("No such entity type '" + entityName + "'", entityName);
 
-		@Override
-		public Map<String, Set<String>> getRequiredEntitiesAndFields() {
-			if (moveTo == null)
-				return super.getRequiredEntitiesAndFields();
-			Map<String, Set<String>> fields = new LinkedHashMap<>(super.getRequiredEntitiesAndFields());
-			for (Map.Entry<String, Set<String>> field : moveTo.requiredFields.entrySet())
-				fields.computeIfAbsent(field.getKey(), __ -> new LinkedHashSet<>()).addAll(field.getValue());
-			return fields;
-		}
-
-		@Override
-		public void validate(ModifiableEntityTypeSet entities, Map<String, CustomMigrationComponent> migrators) throws MigrationException {
-			ModifiableEntityType entityType = entities.getEntityType(entityName);
-			if (entityType == null)
-				throw new MigrationException("No such entity type found: " + entityName, getPosition());
-			else if (!entityType.getSubTypes().isEmpty())
-				throw new MigrationException("Sub-types of entities must be removed before the super type", getPosition());
-			boolean canMoveReferences;
 			if (moveTo != null) {
-				EntityType moveToType = entities.getEntityType(moveTo.targetEntity);
-				if (moveToType == null)
-					throw new MigrationException("Target entity type not found: " + moveTo.targetEntity, getPosition());
-				if (migrators != null)
-					migrators.get(moveTo.migrator.getName()).validate(entities.unmodifiableView(), getPosition());
-				for (String entity : moveTo.affectedEntities) {
-					if (entities.getEntityType(entity) == null)
-						throw new MigrationException("Affected entity type '" + entity + "' does not exist", getPosition());
-				}
-				for (Map.Entry<String, Set<String>> fields : moveTo.requiredFields.entrySet()) {
-					ModifiableEntityType fieldsEntity = entities.getEntityType(fields.getKey());
-					if (fieldsEntity == null)
-						throw new MigrationException("Required entity type '" + fields.getKey() + "' does not exist", getPosition());
-					for (String field : fields.getValue()) {
-						if (fieldsEntity.getField(field) == null)
-							throw new MigrationException("Required field type " + fields.getKey() + "." + field + " does not exist",
-								getPosition());
-					}
-				}
+				boolean canMoveReferences;
+				if (moveTo != null) {
+					EntityType moveToType = types.getEntityType(moveTo.getTargetEntity()); // Assume the move-to validated itself
 
-				// Ensure that any references to the given entity type can be converted to the move-to type
-				canMoveReferences = entityType.getRootType() == moveToType.getRootType();
-				if (canMoveReferences) {
-					// In every entity that references the deleted type (and whose type allows it,
-					// replace each instance with the replacement instance
-					for (ModifiableEntityType referrer : entityType.getReferrers()) {
-						if (referrer != entityType) {
-							for (ModifiableEntityField<GenericEntity> reference : entityType.getReferences(referrer)) {
-								if (!((ModifiableEntityType) reference.getType()).isAssignableFrom(moveToType))
-									throw new MigrationException("Field " + reference + " cannot be migrated to " + moveToType,
-										getPosition());
+					// Ensure that any references to the given entity type can be converted to the move-to type
+					canMoveReferences = entity.getRootType() == moveToType.getRootType();
+					if (canMoveReferences) {
+						// In every entity that references the deleted type (and whose type allows it,
+						// replace each instance with the replacement instance
+						for (ModifiableEntityType referrer : entity.getReferrers()) {
+							if (referrer != entity) {
+								for (ModifiableEntityField<GenericEntity> reference : entity.getReferences(referrer)) {
+									if (!((ModifiableEntityType) reference.getType()).isAssignableFrom(moveToType))
+										throw new QonfigInterpretationException(
+											"Field " + reference + " cannot be migrated to " + moveToType, getPosition());
+								}
 							}
 						}
 					}
+				} else
+					canMoveReferences = false;
+				if (canMoveReferences) { // Already taken care of
+				} else if (entity.getReferrers().isEmpty()) { // No references
+				} else if (entity.getReferrers().size() == 1 && entity.getReferrers().contains(entity)) {
+					// Only self-references
+				} else {
+					StringBuilder str = new StringBuilder(
+						"References to entity type '" + entityName + "' must be removed before the entity type:");
+					for (ModifiableEntityType referrer : entity.getReferrers()) {
+						for (ModifiableEntityField<?> reference : entity.getReferences(referrer))
+							str.append("\n\t").append(referrer.getName()).append('.').append(reference.getName());
+					}
+					throw new QonfigInterpretationException(str.toString(), getPosition());
 				}
-			} else
-				canMoveReferences = false;
-			if (canMoveReferences) { // Already taken care of
-			} else if (entityType.getReferrers().isEmpty()) { // No references
-			} else if (entityType.getReferrers().size() == 1 && entityType.getReferrers().contains(entityType)) {
-				// Only self-references
-			} else {
-				StringBuilder str = new StringBuilder(
-					"References to entity type '" + entityName + "' must be removed before the entity type:");
-				for (ModifiableEntityType referrer : entityType.getReferrers()) {
-					for (ModifiableEntityField<?> reference : entityType.getReferences(referrer))
-						str.append("\n\t").append(referrer.getName()).append('.').append(reference.getName());
-				}
-				throw new MigrationException(str.toString(), getPosition());
 			}
-			entityType.delete(getPosition());
+
+			entity.delete(entityName);
+			return entity;
 		}
 
 		@Override
-		public void apply(MigratableDataSet dataSet, Map<String, CustomMigrationComponent> migrators)
-			throws IOException, TextParseException, MigrationException, DataSetModificationException {
-			ModifiableEntityType entityType = dataSet.getTypes().getEntityType(entityName);
+		public void apply(MigratableDataSet dataSet, MigrationSession session)
+			throws IOException, TextParseException, DataSetModificationException {
+			ModifiableEntityType entityType = dataSet.getTypes().getEntityType(entityName.toString());
 			if (entityType == null)
-				throw new MigrationException("No such entity type found: " + entityName, getPosition());
+				throw new DataSetModificationException("No such entity type found: " + entityName);
 			if (moveTo != null) {
-				EntityType moveToType = dataSet.getTypes().getEntityType(moveTo.targetEntity);
+				String target = moveTo.getTargetEntity();
+				EntityType moveToType = dataSet.getTypes().getEntityType(target);
 				if (moveToType == null)
-					throw new MigrationException("Target entity type not found: " + moveTo.targetEntity, getPosition());
+					throw new DataSetModificationException("Target entity type not found: " + target);
 				Map<GenericEntity, GenericEntity> replacements = new IdentityHashMap<>();
-				GenericEntitySet view = dataSet.createView(getAffectedEntities(), getRequiredEntitiesAndFields());
-				EntityMoveMigrator migrator = (EntityMoveMigrator) migrators.get(moveTo.migrator.getName());
-				for (GenericEntity toDelete : view.getEntities(entityName)) {
+				for (GenericEntity toDelete : dataSet.getEntities(entityName.toString())) {
 					GenericEntity replacement;
 					Object[] id = toDelete.getId();
-					if (view.getEntity(moveToType.getRootType().getName(), id) == null)
-						replacement = view.createEntity(moveTo.targetEntity, id);
+					if (dataSet.getEntity(moveToType.getRootType().getName(), id) == null)
+						replacement = dataSet.createEntity(target, id);
 					else if (id.length == 1)
-						replacement = view.createEntity(moveTo.targetEntity);
+						replacement = dataSet.createEntity(target);
 					else
-						replacement = view.createEntity(moveTo.targetEntity, ArrayUtils.remove(id, id.length - 1));
+						replacement = dataSet.createEntity(target, ArrayUtils.remove(id, id.length - 1));
 					// Initialize identical fields
 					for (EntityField<?> field : entityType.getFields()) {
 						if (!field.isId()) {
@@ -258,15 +262,21 @@ public abstract class SchemaMigration implements Migration {
 							if (replacementField != null && !replacementField.isId()
 								&& replacementField.getType().isAssignableFrom(field.getType())) {
 								Object oldValue = toDelete.get(field);
-								replacement.set(replacementField,
-									oldValue == null ? null : replacementField.getType().convert(oldValue, field.getType()));
+								if (field.getType() instanceof FieldType.CollectionType) {
+									((Collection<Object>) replacement.get(replacementField)).addAll((Collection<?>) oldValue);
+								} else if (field.getType() instanceof FieldType.MapType) {
+									((Map<Object, Object>) replacement.get(replacementField)).putAll((Map<?, ?>) oldValue);
+								} else if (field.getType() instanceof FieldType.MultiMapType) {
+									((MultiMap<Object, Object>) replacement.get(replacementField)).putAll((MultiMap<?, ?>) oldValue);
+								} else
+									replacement.set(replacementField,
+										oldValue == null ? null : replacementField.getType().convert(oldValue, field.getType()));
 							}
 						}
-						migrator.copyData(toDelete, replacement);
+						moveTo.copyData(toDelete, replacement);
 					}
 					replacements.put(toDelete, replacement);
 				}
-				entityType.delete(getPosition());
 
 				// In every entity that references the deleted type, replace each instance with the replacement instance
 				for (ModifiableEntityType referrer : entityType.getReferrers()) {
@@ -290,396 +300,405 @@ public abstract class SchemaMigration implements Migration {
 					}
 				}
 
+				entityType.delete(getPosition());
 				dataSet.entityTypeRemoved(entityType);
 			}
 		}
 	}
 
-	public static class EntityMove {
-		public final String targetEntity;
-		public final Set<String> affectedEntities;
-		public final Map<String, Set<String>> requiredFields;
-		public final ConfigurableCustomMigrator<EntityMoveMigrator> migrator;
-
-		public EntityMove(String targetEntity, Set<String> affectedEntities, Map<String, Set<String>> requiredFields,
-			ConfigurableCustomMigrator<EntityMoveMigrator> migrator) {
-			this.targetEntity = targetEntity;
-			this.affectedEntities = affectedEntities;
-			this.requiredFields = requiredFields;
-			this.migrator = migrator;
-		}
-	}
-
 	public static class RenameEntityMigration extends EntityTypeMigration {
-		public final String renameTo;
+		public final LocatedPositionedContent renameTo;
 
-		public RenameEntityMigration(MigrationSet migrationSet, FilePosition position, String entityName, String renameTo) {
-			super(migrationSet, position, entityName);
-			this.renameTo = renameTo;
+		public RenameEntityMigration(CoreSession session) throws QonfigInterpretationException {
+			super(session);
+			renameTo = session.attributes().get("rename-to").getLocatedContent();
+			SchemaHistory history = session.get(SchemaHistory.HISTORY, SchemaHistory.class);
+			if (history != null)
+				applySchemaChange(history.getTypeSet());
 		}
 
-		private ModifiableEntityType applySchemaChange(ModifiableEntityTypeSet entities) throws MigrationException {
-			ModifiableEntityType entityType = entities.getEntityType(entityName);
+		@Override
+		public ModifiableEntityType applySchemaChange(ModifiableEntityTypeSet entities) throws QonfigInterpretationException {
+			ModifiableEntityType entityType = entities.getEntityType(entityName.toString());
 			if (entityType == null)
-				throw new MigrationException("No such entity type: '" + entityName + "'", getPosition());
-			return entityType.setName(renameTo, getPosition());
+				throw new QonfigInterpretationException("No such entity type: '" + entityName + "'", entityName);
+			return entityType.setName(renameTo);
 		}
 
 		@Override
-		public void validate(ModifiableEntityTypeSet entities, Map<String, CustomMigrationComponent> migrators) throws MigrationException {
-			applySchemaChange(entities);
-		}
-
-		@Override
-		public void apply(MigratableDataSet dataSet, Map<String, CustomMigrationComponent> migrators)
-			throws MigrationException, DataSetModificationException {
-			ModifiableEntityType entityType = applySchemaChange(dataSet.getTypes());
-			dataSet.entityTypeRenamed(entityType, entityName);
+		public void apply(MigratableDataSet dataSet, MigrationSession session) throws DataSetModificationException {
+			ModifiableEntityType entityType;
+			try {
+				entityType = applySchemaChange(dataSet.getTypes());
+			} catch (QonfigInterpretationException e) {
+				throw new DataSetModificationException(e.getMessage(), e);
+			}
+			dataSet.entityTypeRenamed(entityType, entityName.toString());
 		}
 	}
 
 	public static abstract class EntityFieldMigration extends EntityTypeMigration {
-		public final String fieldName;
+		public final LocatedPositionedContent fieldName;
 
-		protected EntityFieldMigration(MigrationSet migrationSet, FilePosition position, String entityName, String fieldName) {
-			super(migrationSet, position, entityName);
-			this.fieldName = fieldName;
-		}
-
-		@Override
-		public Map<String, Set<String>> getRequiredEntitiesAndFields() {
-			return Collections.singletonMap(entityName, Collections.singleton(fieldName));
+		protected EntityFieldMigration(CoreSession session) throws QonfigInterpretationException {
+			super(session);
+			fieldName = session.attributes().get("field").getLocatedContent();
 		}
 	}
 
 	public static class AddFieldMigration extends EntityFieldMigration {
-		public final String type;
-		public final String mappedReference;
-		public final String mappedKey;
-		public final String mappedIndex;
-		public final String mappedSortBy;
-		public final boolean ownsTargetEntity;
-		public final String initValue;
-		public final ConfigurableCustomMigrator<EntityFieldInitializer> initializer;
-		public final Map<String, Set<String>> requiredFields;
+		public final LocatedPositionedContent type;
+		public final ConfiguredFieldMapping mapping;
+		public final LocatedPositionedContent initValue;
+		public final EntityFieldInitializer initWith;
 
-		public AddFieldMigration(MigrationSet migrationSet, FilePosition position, String entityName, String fieldName, String type,
-			String mappedReference, String mappedKey, String mappedIndex, String mappedSortBy, boolean ownsTarget, String initValue,
-			ConfigurableCustomMigrator<EntityFieldInitializer> initializer, Map<String, Set<String>> requiredFields) {
-			super(migrationSet, position, entityName, fieldName);
-			this.type = type;
-			this.mappedReference = mappedReference;
-			this.mappedKey = mappedKey;
-			this.mappedIndex = mappedIndex;
-			this.mappedSortBy = mappedSortBy;
-			this.ownsTargetEntity = ownsTarget;
-			this.initValue = initValue;
-			this.initializer = initializer;
-			this.requiredFields = requiredFields;
+		public AddFieldMigration(CoreSession session) throws QonfigInterpretationException {
+			super(session);
+
+			type = session.attributes().get("type").getLocatedContent();
+			CoreSession mapped = session.forChildren("mapping").peekFirst();
+			mapping = mapped == null ? null : mapped.interpret(ConfiguredFieldMapping.class);
+			initValue = session.attributes().get("init-value").getLocatedContent();
+			CoreSession initWithSession = session.forChildren("init-with").peekFirst();
+			initWith = initWithSession == null ? null : initWithSession.interpret(EntityFieldInitializer.class);
+
+			SchemaHistory history = session.get(SchemaHistory.HISTORY, SchemaHistory.class);
+			// If we're part of an add-entity migrator, we need to wait
+			if (history != null && session.get(AddEntityMigration.ADDING_ENTITY) == null) {
+				applySchemaChange(history.getTypeSet());
+			}
 		}
 
 		@Override
-		public Set<String> getAffectedEntities() {
-			return Collections.singleton(entityName);
+		public ModifiableEntityField<?> applySchemaChange(ModifiableEntityTypeSet entities) throws QonfigInterpretationException {
+			ModifiableEntityType entity = entities.getEntityType(entityName.toString());
+			if (entity == null)
+				throw new QonfigInterpretationException("No such entity '" + entityName + "'", entityName);
+			return addField(entity, true);
 		}
 
-		@Override
-		public Map<String, Set<String>> getRequiredEntitiesAndFields() {
-			return requiredFields;
-		}
-
-		private ModifiableEntityField<?> applySchemaChange(ModifiableEntityTypeSet entities) throws MigrationException {
-			ModifiableEntityType entityType = entities.getEntityType(entityName);
-			if (entityType == null)
-				throw new MigrationException("No such entity type '" + entityName + "'", getPosition());
-			return addField(entityType);
-		}
-
-		public ModifiableEntityField<?> addField(ModifiableEntityType entityType) throws MigrationException {
-			FieldType<?> realType = MigrationUtil.parseFieldType(type, entityType.getTypeSet(), null, getPosition(), null);
-			FieldMappingPrecursor<?, ?> mapping = mappedReference == null ? null : new FieldMappingPrecursor<>(entityType, fieldName,
-				realType, mappedReference, mappedKey, mappedIndex, mappedSortBy, ownsTargetEntity, getPosition());
-			return entityType.addField(fieldName, realType, mapping, getPosition());
-		}
-
-		@Override
-		public void validate(ModifiableEntityTypeSet entities, Map<String, CustomMigrationComponent> migrators) throws MigrationException {
-			ModifiableEntityField<?> field = applySchemaChange(entities);
+		public ModifiableEntityField<?> addField(ModifiableEntityType entity, boolean checkValue) throws QonfigInterpretationException {
+			FieldType<?> fieldType = MigrationUtil.parseFieldType(type, entity.getTypeSet(), entityName, null);
 			if (initValue != null) {
-				if (field.getType() instanceof EntityType)
-					throw new MigrationException("init-value cannot be provided for entity-type fields", getPosition());
-				else if (field.getType() instanceof EnumType) {
-					if (!MigrationPersistence.IDENTIFIER.matcher(initValue).matches())
-						throw new MigrationException("enum-typed init-value must be a literal: " + MigrationPersistence.IDENTIFIER,
-							getPosition());
-					else if (MigrationPersistence.RESERVED_TYPES.contains(initValue))
-						throw new MigrationException(initValue + " is a reserved word", getPosition());
-				} else if (field.getType() instanceof FieldType.ParameterizedType
-					&& ((FieldType.ParameterizedType<?>) field.getType()).isComplex())
-					throw new MigrationException("init-value cannot be provided for complex-type fields"
-						+ " (parameterized types with parameterized type parameters)", getPosition());
+				if (fieldType instanceof EntityType)
+					throw new QonfigInterpretationException("init-value cannot be provided for entity-type fields", initValue);
+				else if (fieldType instanceof FieldType.ParameterizedType && ((FieldType.ParameterizedType<?>) fieldType).isComplex())
+					throw new QonfigInterpretationException(
+						"init-value is not supported for complex-type fields" + " (parameterized types with parameterized type parameters)",
+						initValue);
+				if (checkValue)
+					MigrationUtil.parseFieldValue(initValue, fieldType, null, initValue::getPosition);
 			}
-			for (Map.Entry<String, Set<String>> fields : requiredFields.entrySet()) {
-				ModifiableEntityType fieldsEntity = entities.getEntityType(fields.getKey());
-				if (fieldsEntity == null)
-					throw new MigrationException("Required entity type '" + fields.getKey() + "' does not exist", getPosition());
-				for (String reqdField : fields.getValue()) {
-					if (fieldsEntity.getField(reqdField) == null)
-						throw new MigrationException("Required field type " + fields.getKey() + "." + reqdField + " does not exist",
-							getPosition());
-				}
-			}
+			FieldMappingPrecursor<?, ?> mapped = mapping == null ? null : mapping.createMapping(entity, fieldName, fieldType);
+			ModifiableEntityField<?> field = entity.addField(fieldName, fieldType, mapped);
+			if (checkValue && initWith != null)
+				initWith.validate(this, field);
+			return field;
 		}
 
 		@Override
-		public void apply(MigratableDataSet dataSet, Map<String, CustomMigrationComponent> migrators)
+		public void apply(MigratableDataSet dataSet, MigrationSession session)
 			throws IOException, TextParseException, DataSetModificationException {
-			ModifiableEntityField<?> field = applySchemaChange(dataSet.getTypes());
-			EntityFieldInitializer migrator = initializer == null ? null : (EntityFieldInitializer) migrators.get(initializer.getName());
-			fieldAdded(field, dataSet, migrator);
+			ModifiableEntityType entity = dataSet.getTypes().getEntityType(entityName.toString());
+			if (entity == null)
+				throw new DataSetModificationException("No such entity type '" + entityName + "'");
+			ModifiableEntityField<?> field = addField(entity, false);
+			fieldAdded(field, dataSet);
 		}
 
-		private <F> void fieldAdded(ModifiableEntityField<F> field, MigratableDataSet dataSet, EntityFieldInitializer migrator)
+		private <F> void fieldAdded(ModifiableEntityField<F> field, MigratableDataSet dataSet)
 			throws IOException, TextParseException, DataSetModificationException {
 			F initialValue;
 			if (initValue != null)
-				initialValue = MigrationUtil.parseFieldValue(initValue, field.getType(), dataSet, p -> getPosition());
+				initialValue = MigrationUtil.parseFieldValue(initValue, field.getType(), dataSet, initValue::getPosition);
 			else if (field.getType() instanceof FieldType.ParameterizedType)
 				initialValue = ((FieldType.ParameterizedType<F>) field.getType()).createEmptyStructure();
 			else
 				initialValue = null;
 			dataSet.entityFieldAdded(field, initialValue);
-			if (initValue != null || initializer != null) {
-				GenericEntitySet view = dataSet.createView(getAffectedEntities(), requiredFields);
-				for (GenericEntity entity : view.getEntities(entityName)) {
-					if (migrator != null)
-						entity.set(field, migrator.getInitialValue(entity));
+			if (initWith != null) {
+				for (GenericEntity entity : dataSet.getEntities(entityName.toString())) {
+					entity.set(field, initWith.getInitialValue(entity));
 				}
 			}
 		}
 	}
 
-	public static class RemoveFieldMigration extends EntityFieldMigration {
-		public RemoveFieldMigration(MigrationSet migrationSet, FilePosition position, String entityName, String fieldName) {
-			super(migrationSet, position, entityName, fieldName);
+	public static class ConfiguredFieldMapping {
+		public final LocatedPositionedContent mappedReference;
+		public final LocatedPositionedContent mappedKey;
+		public final LocatedPositionedContent mappedIndex;
+		public final LocatedPositionedContent mappedSortBy;
+		public final boolean ownsTargetEntity;
+
+		public ConfiguredFieldMapping(QonfigInterpreterCore.CoreSession session) throws QonfigInterpretationException {
+			mappedReference = session.attributes().get("by").getLocatedContent();
+			mappedKey = session.attributes().get("key").getLocatedContent();
+			mappedIndex = session.attributes().get("index").getLocatedContent();
+			mappedSortBy = session.attributes().get("sort-by").getLocatedContent();
+			ownsTargetEntity = session.getAttribute("owns-target", boolean.class);
 		}
 
-		private ModifiableEntityField<?> applySchemaChange(ModifiableEntityTypeSet entities) throws MigrationException {
-			ModifiableEntityType entityType = entities.getEntityType(entityName);
+		public FieldMappingPrecursor<?, ?> createMapping(ModifiableEntityType entity, LocatedPositionedContent parentFieldName,
+			FieldType<?> type) throws QonfigInterpretationException {
+			return new FieldMappingPrecursor<>(entity, parentFieldName, type, mappedReference, mappedKey, mappedIndex, mappedSortBy,
+				ownsTargetEntity);
+		}
+	}
+
+	public static class RemoveFieldMigration extends EntityFieldMigration {
+		public RemoveFieldMigration(CoreSession session) throws QonfigInterpretationException {
+			super(session);
+			SchemaHistory history = session.get(SchemaHistory.HISTORY, SchemaHistory.class);
+			if (history != null)
+				applySchemaChange(history.getTypeSet());
+		}
+
+		@Override
+		public ModifiableEntityField<?> applySchemaChange(ModifiableEntityTypeSet entities) throws QonfigInterpretationException {
+			ModifiableEntityType entityType = entities.getEntityType(entityName.toString());
 			if (entityType == null)
-				throw new MigrationException("No such entity type '" + entityName + "'", getPosition());
-			ModifiableEntityField<?> field = entityType.getField(fieldName);
+				throw new QonfigInterpretationException("No such entity type '" + entityName + "'", entityName);
+			ModifiableEntityField<?> field = entityType.getField(fieldName.toString());
 			if (field == null)
-				throw new MigrationException("No such field " + entityName + "." + fieldName, getPosition());
+				throw new QonfigInterpretationException("No such field " + entityName + "." + fieldName, fieldName);
 			else if (field.getOwner() != entityType)
-				throw new MigrationException("Field " + entityName + "." + fieldName + " is owned by super-type " + field.getOwner(),
-					getPosition());
+				throw new QonfigInterpretationException(
+					"Field " + entityName + "." + fieldName + " is owned by super-type " + field.getOwner(), fieldName);
 			else if (field.getMappingReference() != null)
-				throw new MigrationException("Field " + field + " is referenced by mapped field: " + field.getMappingReference(),
-					getPosition());
+				throw new QonfigInterpretationException("Field " + field + " is referenced by mapped field: " + field.getMappingReference(),
+					fieldName);
 			else if (field.getIndexReference() != null)
-				throw new MigrationException("Field " + field + " is referenced by mapped field: " + field.getIndexReference(),
-					getPosition());
+				throw new QonfigInterpretationException("Field " + field + " is referenced by mapped field: " + field.getIndexReference(),
+					fieldName);
 			else if (!field.getAncillaryMappingReferences().isEmpty())
-				throw new MigrationException("Field " + field + " is referenced by mapped fields: " + field.getAncillaryMappingReferences(),
-					getPosition());
+				throw new QonfigInterpretationException(
+					"Field " + field + " is referenced by mapped fields: " + field.getAncillaryMappingReferences(), fieldName);
 			field.delete();
 			return field;
 		}
 
 		@Override
-		public void validate(ModifiableEntityTypeSet entities, Map<String, CustomMigrationComponent> migrators) throws MigrationException {
-			applySchemaChange(entities);
-		}
-
-		@Override
-		public void apply(MigratableDataSet dataSet, Map<String, CustomMigrationComponent> migrators)
-			throws MigrationException, DataSetModificationException {
-			ModifiableEntityField<?> field = applySchemaChange(dataSet.getTypes());
+		public void apply(MigratableDataSet dataSet, MigrationSession session) throws DataSetModificationException {
+			ModifiableEntityField<?> field;
+			try {
+				field = applySchemaChange(dataSet.getTypes());
+			} catch (QonfigInterpretationException e) {
+				throw new DataSetModificationException(e.getMessage(), e);
+			}
 			dataSet.entityFieldRemoved(field);
 		}
 	}
 
 	public static class RenameFieldMigration extends EntityFieldMigration {
-		public final String renameTo;
+		public final LocatedPositionedContent renameTo;
 
-		public RenameFieldMigration(MigrationSet migrationSet, FilePosition position, String entityName, String fieldName,
-			String renameTo) {
-			super(migrationSet, position, entityName, fieldName);
-			this.renameTo = renameTo;
+		public RenameFieldMigration(CoreSession session) throws QonfigInterpretationException {
+			super(session);
+			renameTo = session.attributes().get("rename-to").getLocatedContent();
+			SchemaHistory history = session.get(SchemaHistory.HISTORY, SchemaHistory.class);
+			if (history != null)
+				applySchemaChange(history.getTypeSet());
 		}
 
-		private ModifiableEntityField<?> applySchemaChange(ModifiableEntityTypeSet entities) throws MigrationException {
-			ModifiableEntityType entityType = entities.getEntityType(entityName);
+		@Override
+		public ModifiableEntityField<?> applySchemaChange(ModifiableEntityTypeSet entities) throws QonfigInterpretationException {
+			ModifiableEntityType entityType = entities.getEntityType(entityName.toString());
 			if (entityType == null)
-				throw new MigrationException("No such entity type '" + entityName + "'", getPosition());
-			ModifiableEntityField<?> field = entityType.getField(fieldName);
+				throw new QonfigInterpretationException("No such entity type '" + entityName + "'", entityName);
+			ModifiableEntityField<?> field = entityType.getField(fieldName.toString());
 			if (field == null)
-				throw new MigrationException("No such field " + entityName + "." + fieldName, getPosition());
-			return field.setName(renameTo, getPosition());
+				throw new QonfigInterpretationException("No such field " + entityName + "." + fieldName, fieldName);
+			return field.setName(renameTo);
 		}
 
 		@Override
-		public void validate(ModifiableEntityTypeSet entities, Map<String, CustomMigrationComponent> migrators) throws MigrationException {
-			applySchemaChange(entities);
-		}
-
-		@Override
-		public void apply(MigratableDataSet dataSet, Map<String, CustomMigrationComponent> migrators)
-			throws MigrationException, DataSetModificationException {
-			ModifiableEntityField<?> field = applySchemaChange(dataSet.getTypes());
-			dataSet.entityFieldRenamed(field, fieldName);
+		public void apply(MigratableDataSet dataSet, MigrationSession session) throws DataSetModificationException {
+			ModifiableEntityField<?> field;
+			try {
+				field = applySchemaChange(dataSet.getTypes());
+			} catch (QonfigInterpretationException e) {
+				throw new DataSetModificationException(e.getMessage(), e);
+			}
+			dataSet.entityFieldRenamed(field, fieldName.toString());
 		}
 	}
 
 	public static abstract class EnumTypeMigration extends SchemaMigration {
-		public final String enumName;
+		public final LocatedPositionedContent enumName;
 
-		protected EnumTypeMigration(MigrationSet migrationSet, FilePosition position, String enumName) {
-			super(migrationSet, position);
-			this.enumName = enumName;
+		protected EnumTypeMigration(CoreSession session) throws QonfigInterpretationException {
+			super(session);
+			enumName = session.attributes().get("enum").getLocatedContent();
 		}
 	}
 
 	public static class AddEnumMigration extends EnumTypeMigration {
-		public final Set<String> initialValues;
+		public final Set<LocatedPositionedContent> initialValues;
 
-		public AddEnumMigration(MigrationSet migrationSet, FilePosition position, String enumName, Set<String> initialValues) {
-			super(migrationSet, position, enumName);
-			this.initialValues = initialValues;
+		public AddEnumMigration(CoreSession session) throws QonfigInterpretationException {
+			super(session);
+			Set<LocatedPositionedContent> values = new LinkedHashSet<>();
+			for (CoreSession value : session.forChildren("value"))
+				values.add(value.attributes().get("value").getLocatedContent());
+			initialValues = Collections.unmodifiableSet(values);
+			SchemaHistory history = session.get(SchemaHistory.HISTORY, SchemaHistory.class);
+			if (history != null)
+				applySchemaChange(history.getTypeSet());
 		}
 
 		@Override
-		public void validate(ModifiableEntityTypeSet entities, Map<String, CustomMigrationComponent> migrators) throws MigrationException {
-			ModifiableEnumType enumType = entities.createEnumType(enumName, getPosition());
-			for (String value : initialValues)
-				enumType.addValue(value, getPosition());
+		public ModifiableEnumType applySchemaChange(ModifiableEntityTypeSet entities) throws QonfigInterpretationException {
+			ModifiableEnumType enumType = entities.createEnumType(enumName);
+			for (LocatedPositionedContent value : initialValues)
+				enumType.addValue(value);
+			return enumType;
 		}
 
 		@Override
-		public void apply(MigratableDataSet dataSet, Map<String, CustomMigrationComponent> migrators)
-			throws MigrationException, DataSetModificationException {
-			ModifiableEnumType enumType = dataSet.getTypes().createEnumType(enumName, getPosition());
-			for (String value : initialValues)
-				enumType.addValue(value, getPosition());
+		public void apply(MigratableDataSet dataSet, MigrationSession session) throws DataSetModificationException {
+			try {
+				applySchemaChange(dataSet.getTypes());
+			} catch (QonfigInterpretationException e) {
+				throw new DataSetModificationException(e.getMessage(), e);
+			}
 		}
 	}
 
 	public static class RemoveEnumMigration extends EnumTypeMigration {
-		public RemoveEnumMigration(MigrationSet migrationSet, FilePosition position, String enumName) {
-			super(migrationSet, position, enumName);
+		public RemoveEnumMigration(CoreSession session) throws QonfigInterpretationException {
+			super(session);
+			SchemaHistory history = session.get(SchemaHistory.HISTORY, SchemaHistory.class);
+			if (history != null)
+				applySchemaChange(history.getTypeSet());
 		}
 
-		private void applySchemaChange(ModifiableEntityTypeSet entities) throws MigrationException {
-			ModifiableEnumType enumType = entities.getEnumType(enumName);
+		@Override
+		public ModifiableEnumType applySchemaChange(ModifiableEntityTypeSet entities) throws QonfigInterpretationException {
+			ModifiableEnumType enumType = entities.getEnumType(enumName.toString());
 			if (enumType == null)
-				throw new MigrationException("No such enum '" + enumName + "'", getPosition());
+				throw new QonfigInterpretationException("No such enum '" + enumName + "'", enumName);
 			for (EntityType entity : entities.getEntityTypes()) {
 				for (EntityField<?> field : entity.getLocalFields()) {
 					if (field.getType() == enumType)
-						throw new MigrationException("Enum '" + enumName + "' is referred to by field " + field, getPosition());
+						throw new QonfigInterpretationException("Enum '" + enumName + "' is referred to by field " + field, getPosition());
 				}
 			}
 			enumType.delete(getPosition());
+			return enumType;
 		}
 
 		@Override
-		public void validate(ModifiableEntityTypeSet entities, Map<String, CustomMigrationComponent> migrators) throws MigrationException {
-			applySchemaChange(entities);
-		}
-
-		@Override
-		public void apply(MigratableDataSet dataSet, Map<String, CustomMigrationComponent> migrators) throws MigrationException {
-			applySchemaChange(dataSet.getTypes());
+		public void apply(MigratableDataSet dataSet, MigrationSession session) throws DataSetModificationException {
+			try {
+				applySchemaChange(dataSet.getTypes());
+			} catch (QonfigInterpretationException e) {
+				throw new DataSetModificationException(e.getMessage(), e);
+			}
 		}
 	}
 
 	public static class RenameEnumMigration extends EnumTypeMigration {
-		public final String renameTo;
+		public final LocatedPositionedContent renameTo;
 
-		public RenameEnumMigration(MigrationSet migrationSet, FilePosition position, String enumName, String renameTo) {
-			super(migrationSet, position, enumName);
-			this.renameTo = renameTo;
+		public RenameEnumMigration(CoreSession session) throws QonfigInterpretationException {
+			super(session);
+			renameTo = session.attributes().get("rename-to").getLocatedContent();
+			SchemaHistory history = session.get(SchemaHistory.HISTORY, SchemaHistory.class);
+			if (history != null)
+				applySchemaChange(history.getTypeSet());
 		}
 
 		@Override
-		public void validate(ModifiableEntityTypeSet entities, Map<String, CustomMigrationComponent> migrators) throws MigrationException {
-			ModifiableEnumType enumType = entities.getEnumType(enumName);
+		public ModifiableEnumType applySchemaChange(ModifiableEntityTypeSet entities) throws QonfigInterpretationException {
+			ModifiableEnumType enumType = entities.getEnumType(enumName.toString());
 			if (enumType == null)
-				throw new MigrationException("No such enum '" + enumName + "'", getPosition());
-			enumType.setName(renameTo, getPosition());
+				throw new QonfigInterpretationException("No such enum '" + enumName + "'", enumName);
+			enumType.setName(renameTo);
+			return enumType;
 		}
 
 		@Override
-		public void apply(MigratableDataSet dataSet, Map<String, CustomMigrationComponent> migrators)
-			throws MigrationException, DataSetModificationException {
-			ModifiableEnumType enumType = dataSet.getTypes().getEnumType(enumName);
-			if (enumType == null)
-				throw new MigrationException("No such enum '" + enumName + "'", getPosition());
-			enumType.setName(renameTo, getPosition());
+		public void apply(MigratableDataSet dataSet, MigrationSession session) throws DataSetModificationException {
+			try {
+				applySchemaChange(dataSet.getTypes());
+			} catch (QonfigInterpretationException e) {
+				throw new DataSetModificationException(e.getMessage(), e);
+			}
 		}
 	}
 
 	public static abstract class EnumValueMigration extends EnumTypeMigration {
-		public final String valueName;
+		public final LocatedPositionedContent valueName;
 
-		protected EnumValueMigration(MigrationSet migrationSet, FilePosition position, String enumName, String valueName) {
-			super(migrationSet, position, enumName);
-			this.valueName = valueName;
+		protected EnumValueMigration(CoreSession session) throws QonfigInterpretationException {
+			super(session);
+			valueName = session.attributes().get("value").getLocatedContent();
 		}
 	}
 
 	public static class AddValueMigration extends EnumValueMigration {
-		public AddValueMigration(MigrationSet migrationSet, FilePosition position, String enumName, String valueName) {
-			super(migrationSet, position, enumName, valueName);
+		public AddValueMigration(CoreSession session) throws QonfigInterpretationException {
+			super(session);
+			SchemaHistory history = session.get(SchemaHistory.HISTORY, SchemaHistory.class);
+			if (history != null)
+				applySchemaChange(history.getTypeSet());
 		}
 
 		@Override
-		public void validate(ModifiableEntityTypeSet entities, Map<String, CustomMigrationComponent> migrators) throws MigrationException {
-			ModifiableEnumType enumType = entities.getEnumType(enumName);
+		public ModifiableEnumValue applySchemaChange(ModifiableEntityTypeSet entities) throws QonfigInterpretationException {
+			ModifiableEnumType enumType = entities.getEnumType(enumName.toString());
 			if (enumType == null)
-				throw new MigrationException("No such enum '" + enumName + "'", getPosition());
-			enumType.addValue(valueName, getPosition());
+				throw new QonfigInterpretationException("No such enum '" + enumName + "'", enumName);
+			return enumType.addValue(valueName);
 		}
 
 		@Override
-		public void apply(MigratableDataSet dataSet, Map<String, CustomMigrationComponent> migrators)
-			throws MigrationException, DataSetModificationException {
-			dataSet.getTypes().getEnumType(enumName).addValue(valueName, getPosition());
+		public void apply(MigratableDataSet dataSet, MigrationSession session) throws DataSetModificationException {
+			try {
+				applySchemaChange(dataSet.getTypes());
+			} catch (QonfigInterpretationException e) {
+				throw new DataSetModificationException(e.getMessage(), e);
+			}
 		}
 	}
 
 	public static class RemoveValueMigration extends EnumValueMigration {
-		public RemoveValueMigration(MigrationSet migrationSet, FilePosition position, String enumName, String valueName) {
-			super(migrationSet, position, enumName, valueName);
+		public RemoveValueMigration(CoreSession session) throws QonfigInterpretationException {
+			super(session);
+
+			SchemaHistory history = session.get(SchemaHistory.HISTORY, SchemaHistory.class);
+			if (history != null)
+				applySchemaChange(history.getTypeSet());
 		}
 
 		@Override
-		public void validate(ModifiableEntityTypeSet entities, Map<String, CustomMigrationComponent> migrators) throws MigrationException {
-			ModifiableEnumType enumType = entities.getEnumType(enumName);
+		public ModifiableEnumValue applySchemaChange(ModifiableEntityTypeSet entities) throws QonfigInterpretationException {
+			ModifiableEnumType enumType = entities.getEnumType(enumName.toString());
 			if (enumType == null)
-				throw new MigrationException("No such enum '" + enumName + "'", getPosition());
-			ModifiableEnumValue value = enumType.getValue(valueName);
+				throw new QonfigInterpretationException("No such enum '" + enumName + "'", enumName);
+			ModifiableEnumValue value = enumType.getValue(valueName.toString());
 			if (value == null)
-				throw new MigrationException("No such enum value " + value, getPosition());
+				throw new QonfigInterpretationException("No such enum value " + value, valueName);
 			value.delete();
+			return value;
 		}
 
 		@Override
-		public void apply(MigratableDataSet dataSet, Map<String, CustomMigrationComponent> migrators)
-			throws IOException, TextParseException, MigrationException, DataSetModificationException {
-			ModifiableEnumType enumType = dataSet.getTypes().getEnumType(enumName);
+		public void apply(MigratableDataSet dataSet, MigrationSession session)
+			throws IOException, TextParseException, DataSetModificationException {
+			ModifiableEnumType enumType = dataSet.getTypes().getEnumType(enumName.toString());
 			if (enumType == null)
-				throw new MigrationException("No such enum '" + enumName + "'", getPosition());
-			ModifiableEnumValue value = enumType.getValue(valueName);
+				throw new DataSetModificationException("No such enum '" + enumName + "'");
+			ModifiableEnumValue value = enumType.getValue(valueName.toString());
 			if (value == null)
-				throw new MigrationException("No such enum value " + value, getPosition());
+				throw new DataSetModificationException("No such enum value " + value);
 			for (EntityType entityType : enumType.getReferrers()) {
 				for (GenericEntity entity : dataSet.getEntities(entityType.getName())) {
 					for (EntityField<EnumValue> field : enumType.getReferences(entityType)) {
 						if (entity.get(field) == value)
-							throw new MigrationException("Enum value " + value + " is referred to by " + entity + "." + field.getName(),
-								getPosition());
+							throw new DataSetModificationException(
+								"Enum value " + value + " is referred to by " + entity + "." + field.getName());
 					}
 				}
 			}
@@ -688,33 +707,35 @@ public abstract class SchemaMigration implements Migration {
 	}
 
 	public static class RenameValueMigration extends EnumValueMigration {
-		public final String renameTo;
+		public final LocatedPositionedContent renameTo;
 
-		public RenameValueMigration(MigrationSet migrationSet, FilePosition position, String enumName, String valueName, String renameTo) {
-			super(migrationSet, position, enumName, valueName);
-			this.renameTo = renameTo;
+		public RenameValueMigration(CoreSession session) throws QonfigInterpretationException {
+			super(session);
+			renameTo = session.attributes().get("rename-to").getLocatedContent();
+			SchemaHistory history = session.get(SchemaHistory.HISTORY, SchemaHistory.class);
+			if (history != null)
+				applySchemaChange(history.getTypeSet());
 		}
 
-		private ModifiableEnumValue applySchemaChange(ModifiableEntityTypeSet entities) throws MigrationException {
-			ModifiableEnumType enumType = entities.getEnumType(enumName);
+		@Override
+		public ModifiableEnumValue applySchemaChange(ModifiableEntityTypeSet entities) throws QonfigInterpretationException {
+			ModifiableEnumType enumType = entities.getEnumType(enumName.toString());
 			if (enumType == null)
-				throw new MigrationException("No such enum '" + enumName + "'", getPosition());
-			ModifiableEnumValue value = enumType.getValue(valueName);
+				throw new QonfigInterpretationException("No such enum '" + enumName + "'", enumName);
+			ModifiableEnumValue value = enumType.getValue(valueName.toString());
 			if (value == null)
-				throw new MigrationException("No such enum value " + value, getPosition());
-			return value.setName(renameTo, getPosition());
+				throw new QonfigInterpretationException("No such enum value " + value, valueName);
+			return value.setName(renameTo);
 		}
 
 		@Override
-		public void validate(ModifiableEntityTypeSet entities, Map<String, CustomMigrationComponent> migrators) throws MigrationException {
-			applySchemaChange(entities);
-		}
-
-		@Override
-		public void apply(MigratableDataSet dataSet, Map<String, CustomMigrationComponent> migrators)
-			throws MigrationException, DataSetModificationException {
-			EnumValue value = applySchemaChange(dataSet.getTypes());
-			validate(dataSet.getTypes(), migrators);
+		public void apply(MigratableDataSet dataSet, MigrationSession session) throws DataSetModificationException {
+			EnumValue value;
+			try {
+				value = applySchemaChange(dataSet.getTypes());
+			} catch (QonfigInterpretationException e) {
+				throw new DataSetModificationException(e.getMessage(), e);
+			}
 			for (EntityType entityType : value.getType().getReferrers()) {
 				dataSet.entityAffected(entityType);
 			}

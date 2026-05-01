@@ -35,8 +35,9 @@ import org.qommons.collect.BetterSortedSet;
 import org.qommons.collect.DequeList;
 import org.qommons.collect.MultiEntryHandle;
 import org.qommons.collect.MultiMap;
-import org.qommons.data.migration.MigrationException;
-import org.qommons.io.FilePosition;
+import org.qommons.config.QonfigInterpretationException;
+import org.qommons.ex.ExFunction;
+import org.qommons.io.LocatedFilePosition;
 import org.qommons.tree.BetterTreeList;
 import org.qommons.tree.BetterTreeMap;
 import org.qommons.tree.BetterTreeMultiMap;
@@ -204,7 +205,7 @@ public interface FieldType<F> extends Comparator<F> {
 			return test.apply(this);
 		}
 
-		public F parse(String text, IntFunction<FilePosition> source) throws MigrationException {
+		public F parse(String text, IntFunction<LocatedFilePosition> source) throws QonfigInterpretationException {
 			if (this == BOOLEAN) {
 				switch (text) {
 				case "true":
@@ -214,63 +215,67 @@ public interface FieldType<F> extends Comparator<F> {
 				case "FALSE":
 					return (F) Boolean.FALSE;
 				default:
-					throw new MigrationException("Expected 'true' or 'false', not '" + text + "'", source.apply(0));
+					throw new QonfigInterpretationException("Expected 'true' or 'false', not '" + text + "'", source.apply(0),
+						text.length());
 				}
 			} else if (this == CHAR) {
 				if (text.length() != 1)
-					throw new MigrationException("Expected a single character", source.apply(0));
+					throw new QonfigInterpretationException("Expected a single character", source.apply(0), text.length());
 				return (F) Character.valueOf(text.charAt(0));
 			} else if (this == STRING) {
 				return (F) text;
 			} else if (this == BYTE) {
 				try {
-					return (F) Byte.valueOf(text);
+					return (F) Byte.valueOf(text.toString());
 				} catch (NumberFormatException e) {
-					throw new MigrationException("Could not parse byte from '" + text + "'", source.apply(0), e);
+					throw new QonfigInterpretationException("Could not parse byte from '" + text + "'", source.apply(0), text.length(), e);
 				}
 			} else if (this == SHORT) {
 				try {
-					return (F) Short.valueOf(text);
+					return (F) Short.valueOf(text.toString());
 				} catch (NumberFormatException e) {
-					throw new MigrationException("Could not parse short from '" + text + "'", source.apply(0), e);
+					throw new QonfigInterpretationException("Could not parse short from '" + text + "'", source.apply(0), text.length(), e);
 				}
 			} else if (this == INT) {
 				try {
-					return (F) Integer.valueOf(text);
+					return (F) Integer.valueOf(text.toString());
 				} catch (NumberFormatException e) {
-					throw new MigrationException("Could not parse int from '" + text + "'", source.apply(0), e);
+					throw new QonfigInterpretationException("Could not parse int from '" + text + "'", source.apply(0), text.length(), e);
 				}
 			} else if (this == LONG) {
 				try {
-					return (F) Long.valueOf(text);
+					return (F) Long.valueOf(text.toString());
 				} catch (NumberFormatException e) {
-					throw new MigrationException("Could not parse long from '" + text + "'", source.apply(0), e);
+					throw new QonfigInterpretationException("Could not parse long from '" + text + "'", source.apply(0), text.length(), e);
 				}
 			} else if (this == FLOAT) {
 				try {
-					return (F) Float.valueOf(text);
+					return (F) Float.valueOf(text.toString());
 				} catch (NumberFormatException e) {
-					throw new MigrationException("Could not parse float from '" + text + "'", source.apply(0), e);
+					throw new QonfigInterpretationException("Could not parse float from '" + text + "'", source.apply(0), text.length(), e);
 				}
 			} else if (this == DOUBLE) {
 				try {
-					return (F) Double.valueOf(text);
+					return (F) Double.valueOf(text.toString());
 				} catch (NumberFormatException e) {
-					throw new MigrationException("Could not parse double from '" + text + "'", source.apply(0), e);
+					throw new QonfigInterpretationException("Could not parse double from '" + text + "'", source.apply(0), text.length(),
+						e);
 				}
 			} else if (this == INSTANT) {
 				try {
 					LocalDateTime localTime = LocalDateTime.from(INSTANT_FORMAT.parse(text));
 					return (F) localTime.atOffset(ZoneOffset.UTC).toInstant();
 				} catch (DateTimeParseException e) {
-					throw new MigrationException("Could not parse instant from '" + text + "'", source.apply(0), e);
+					throw new QonfigInterpretationException("Could not parse instant from '" + text + "'", source.apply(0), text.length(),
+						e);
 				}
 			} else if (this == DURATION) {
 				double seconds;
 				try {
-					seconds = Double.parseDouble(text);
+					seconds = Double.parseDouble(text.toString());
 				} catch (NumberFormatException e) {
-					throw new MigrationException("Could not parse double from '" + text + "'", source.apply(0), e);
+					throw new QonfigInterpretationException("Could not parse double from '" + text + "'", source.apply(0), text.length(),
+						e);
 				}
 				return (F) TimeUtils.ofSeconds(seconds);
 			} else {
@@ -332,7 +337,7 @@ public interface FieldType<F> extends Comparator<F> {
 			return null;
 		}
 
-		ParameterizedType<F> map(Function<? super FieldType<?>, ? extends FieldType<?>> map);
+		<X extends Throwable> ParameterizedType<F> map(ExFunction<? super FieldType<?>, ? extends FieldType<?>, X> map) throws X;
 
 		F createEmptyStructure();
 	}
@@ -444,7 +449,7 @@ public interface FieldType<F> extends Comparator<F> {
 		}
 
 		@Override
-		public ParameterizedType<C> map(Function<? super FieldType<?>, ? extends FieldType<?>> map) {
+		public <X extends Throwable> CollectionType<E, C> map(ExFunction<? super FieldType<?>, ? extends FieldType<?>, X> map) throws X {
 			FieldType<E> newCT = (FieldType<E>) map.apply(componentType);
 			return newCT == componentType ? this : new CollectionType<>(newCT, isSorted, isDistinct);
 		}
@@ -574,7 +579,7 @@ public interface FieldType<F> extends Comparator<F> {
 		}
 
 		@Override
-		public ParameterizedType<M> map(Function<? super FieldType<?>, ? extends FieldType<?>> map) {
+		public <X extends Throwable> MapType<K, V, M> map(ExFunction<? super FieldType<?>, ? extends FieldType<?>, X> map) throws X {
 			FieldType<K> newKT = (FieldType<K>) map.apply(keyType);
 			FieldType<V> newVT = (FieldType<V>) map.apply(valueType);
 			if (newKT == keyType && newVT == valueType)
@@ -741,7 +746,7 @@ public interface FieldType<F> extends Comparator<F> {
 		}
 
 		@Override
-		public ParameterizedType<M> map(Function<? super FieldType<?>, ? extends FieldType<?>> map) {
+		public <X extends Throwable> MultiMapType<K, V, M> map(ExFunction<? super FieldType<?>, ? extends FieldType<?>, X> map) throws X {
 			FieldType<K> newKT = (FieldType<K>) map.apply(keyType);
 			FieldType<V> newVT = (FieldType<V>) map.apply(valueType);
 			if (newKT == keyType && newVT == valueType)

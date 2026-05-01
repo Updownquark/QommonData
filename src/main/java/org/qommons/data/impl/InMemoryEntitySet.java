@@ -337,7 +337,7 @@ public class InMemoryEntitySet implements GenericEntitySet {
 		entityAffected(field.getOwner());
 	}
 
-	protected void entityFieldRemoved(EntityField field) throws DataSetModificationException {
+	protected void entityFieldRemoved(EntityField<?> field) throws DataSetModificationException {
 		BetterSortedSet<GenericEntity> entities = getInternalEntities(field.getOwner().getRootType());
 		if (!entities.isEmpty()) {
 			Map<EntityType, Integer> fieldIndexes = new HashMap<>();
@@ -346,7 +346,8 @@ public class InMemoryEntitySet implements GenericEntitySet {
 				if (fieldIndex == null) {
 					if (!field.getOwner().isInstance(entity))
 						continue;
-					fieldIndex = entity.getType().indexOf(field);
+					fieldIndex = -entity.getType().getFields()
+						.indexFor(f -> StringUtils.compareNumberTolerant(field.getName(), f.getName(), true, true)) - 1;
 					fieldIndexes.put(entity.getType(), fieldIndex);
 				}
 				((InMemoryEntity) entity).fieldRemoved(fieldIndex);
@@ -355,7 +356,7 @@ public class InMemoryEntitySet implements GenericEntitySet {
 		entityAffected(field.getOwner());
 	}
 
-	protected void entityFieldRenamed(EntityField field, String oldName) throws DataSetModificationException {
+	protected void entityFieldRenamed(EntityField<?> field, String oldName) throws DataSetModificationException {
 		BetterSortedSet<GenericEntity> entities = getInternalEntities(field.getOwner().getRootType());
 		if (!entities.isEmpty()) {
 			Map<EntityType, int[]> fieldIndexes = new HashMap<>();
@@ -367,6 +368,8 @@ public class InMemoryEntitySet implements GenericEntitySet {
 					int fromIndex = -entity.getType().getFields()
 						.indexFor(f -> StringUtils.compareNumberTolerant(oldName, f.getName(), true, true)) - 1;
 					int toIndex = entity.getType().getFields().indexOf(field);
+					if (fromIndex > toIndex)
+						fromIndex--;
 					fieldIndex = new int[] { fromIndex, toIndex };
 					fieldIndexes.put(entity.getType(), fieldIndex);
 				}

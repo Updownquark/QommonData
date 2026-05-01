@@ -1,5 +1,6 @@
 package org.qommons.data.impl;
 
+import java.io.IOException;
 import java.util.Map;
 import java.util.Set;
 import java.util.function.Function;
@@ -13,7 +14,6 @@ import org.qommons.data.types.EntityType;
 import org.qommons.data.types.EntityTypeSet;
 import org.qommons.data.types.modifiable.ModifiableEntityTypeSet;
 import org.qommons.data.values.DataSetModificationException;
-import org.qommons.data.values.GenericEntity;
 import org.qommons.data.values.GenericEntitySet;
 import org.qommons.tree.BetterTreeSet;
 
@@ -52,12 +52,12 @@ public class InMemoryMigratableEntitySet extends InMemoryEntitySet implements Mi
 	}
 
 	@Override
-	public void entityFieldRemoved(EntityField field) throws DataSetModificationException {
+	public void entityFieldRemoved(EntityField<?> field) throws DataSetModificationException {
 		super.entityFieldRemoved(field);
 	}
 
 	@Override
-	public void entityFieldRenamed(EntityField field, String oldName) throws DataSetModificationException {
+	public void entityFieldRenamed(EntityField<?> field, String oldName) throws DataSetModificationException {
 		super.entityFieldRenamed(field, oldName);
 	}
 
@@ -85,21 +85,11 @@ public class InMemoryMigratableEntitySet extends InMemoryEntitySet implements Mi
 	@Override
 	public GenericEntitySet immutableSchema(EntityTypeSet codeTypes) {
 		GenericEntitySet immutable = new InMemoryEntitySet(codeTypes, __ -> getLock());
-		for (EntityType type : codeTypes.getEntityTypes()) {
-			if (type.getSuperTypes().isEmpty()) {
-				for (GenericEntity entity : getEntities(type.getName())) {
-					copyEntity(entity, immutable);
-				}
-			}
+		try {
+			GenericEntitySet.copy(this, immutable);
+		} catch (IOException e) {
+			throw new IllegalStateException("Should not happen", e);
 		}
 		return immutable;
-	}
-
-	private void copyEntity(GenericEntity entity, GenericEntitySet entitySet) {
-		GenericEntity copy = entitySet.createEntity(entity.getType().getName(), entity.getId());
-		for (EntityField<?> field : entity.getType().getFields()) {
-			if (!field.isId())
-				copy.set(field, entity.get(field));
-		}
 	}
 }

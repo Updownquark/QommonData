@@ -5,13 +5,13 @@ import java.util.HashSet;
 import java.util.Set;
 
 import org.qommons.QommonsUtils;
-import org.qommons.data.migration.MigrationException;
+import org.qommons.config.QonfigInterpretationException;
 import org.qommons.data.types.EntityField;
 import org.qommons.data.types.EntityType;
 import org.qommons.data.types.FieldMapping;
 import org.qommons.data.types.FieldType;
 import org.qommons.data.values.GenericEntity;
-import org.qommons.io.FilePosition;
+import org.qommons.io.LocatedPositionedContent;
 
 public class ModifiableEntityField<F> implements EntityField<F> {
 	private final ModifiableEntityType theOwner;
@@ -24,8 +24,7 @@ public class ModifiableEntityField<F> implements EntityField<F> {
 	private FieldMapping<?, ?, ?> theIndexReference;
 	private final Set<FieldMapping<?, ?, ?>> theAncillaryMappingReferences;
 
-	ModifiableEntityField(ModifiableEntityType owner, String name, FieldType<F> type, boolean isId, FieldMappingPrecursor<?, ?> mapping,
-		FilePosition source) {
+	ModifiableEntityField(ModifiableEntityType owner, String name, FieldType<F> type, boolean isId, FieldMappingPrecursor<?, ?> mapping) {
 		theOwner = owner;
 		theName = name;
 		theType = type;
@@ -46,8 +45,8 @@ public class ModifiableEntityField<F> implements EntityField<F> {
 		return theName;
 	}
 
-	public ModifiableEntityField<F> setName(String newName, FilePosition source) throws MigrationException {
-		theOwner.renameField(this, newName, source);
+	public ModifiableEntityField<F> setName(LocatedPositionedContent newName) throws QonfigInterpretationException {
+		theOwner.renameField(this, newName);
 		return this;
 	}
 

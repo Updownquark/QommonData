@@ -1,9 +1,9 @@
 package org.qommons.data.types.modifiable;
 
-import org.qommons.data.migration.MigrationException;
+import org.qommons.config.QonfigInterpretationException;
 import org.qommons.data.types.EnumType;
 import org.qommons.data.types.EnumValue;
-import org.qommons.io.FilePosition;
+import org.qommons.io.LocatedPositionedContent;
 
 public class ModifiableEnumValue implements EnumValue {
 	private final ModifiableEnumType theType;
@@ -26,8 +26,8 @@ public class ModifiableEnumValue implements EnumValue {
 		return theName;
 	}
 
-	public ModifiableEnumValue setName(String name, FilePosition source) throws MigrationException {
-		theType.renameValue(this, name, source);
+	public ModifiableEnumValue setName(LocatedPositionedContent name) throws QonfigInterpretationException {
+		theType.renameValue(this, name);
 		return this;
 	}
 

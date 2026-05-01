@@ -17,6 +17,7 @@ import org.qommons.collect.BetterSortedList.SortedSearchFilter;
 import org.qommons.collect.BetterSortedSet;
 import org.qommons.collect.CollectionElement;
 import org.qommons.collect.ElementId;
+import org.qommons.collect.ListElement;
 import org.qommons.collect.MapEntryHandle;
 import org.qommons.collect.ModControlledCollection;
 import org.qommons.collect.ModControlledMap;
@@ -264,6 +265,11 @@ public abstract class AbstractGenericEntity implements GenericEntity {
 		}
 	}
 
+	@Override
+	public boolean isDeleted() {
+		return isDeleted;
+	}
+
 	protected void fieldStructureChanged(EntityField<?> field) {
 	}
 
@@ -462,6 +468,24 @@ public abstract class AbstractGenericEntity implements GenericEntity {
 
 	protected void fieldAdded(int index, Object value) {
 		theFieldValues = ArrayUtils.add(theFieldValues, value, index);
+		EntityField<?> field = theType.getFields().get(index);
+		if (field.getType() instanceof FieldType.ParameterizedType) {
+			theFieldValues[index] = createEmptyStructure(field, (FieldType.ParameterizedType<?>) field.getType());
+			if (field.getMapping() != null)
+				theFieldValues[index] = controlMappedStructure(theFieldValues[index], (FieldMapping<Object, ?, ?>) field.getMapping());
+			else
+				theFieldValues[index] = controlUnmappedStructure(theFieldValues[index], (EntityField<Object>) field);
+			if (value != null) {
+				if (field.getType() instanceof FieldType.CollectionType)
+					((Collection<Object>) theFieldValues[index]).addAll((Collection<?>) value);
+				else if (field.getType() instanceof FieldType.MapType)
+					((Map<Object, Object>) theFieldValues[index]).putAll((Map<?, ?>) value);
+				else if (field.getType() instanceof FieldType.MultiMapType)
+					((MultiMap<Object, Object>) theFieldValues[index]).putAll((MultiMap<?, ?>) value);
+				else
+					throw new IllegalStateException("Unrecognized parameterized type: " + field.getType());
+			}
+		}
 	}
 
 	protected void fieldRemoved(int index) {
@@ -675,6 +699,8 @@ public abstract class AbstractGenericEntity implements GenericEntity {
 		public void elementAdded(CollectionElement<GenericEntity> element) {
 			if (element.get().get(theField.mappedReferenceField) != theOwner)
 				element.get().set(theField.mappedReferenceField, theOwner);
+			if (theField.indexField != null)
+				element.get().set(theField.indexField, ((ListElement<?>) element).getElementsBefore());
 		}
 
 		@Override
@@ -697,6 +723,8 @@ public abstract class AbstractGenericEntity implements GenericEntity {
 		public void elementReplaced(CollectionElement<GenericEntity> element, GenericEntity previousValue) {
 			entityRemoved(previousValue);
 			elementAdded(element);
+			if (theField.indexField != null)
+				element.get().set(theField.indexField, ((ListElement<?>) element).getElementsBefore());
 		}
 
 		@Override
@@ -706,6 +734,8 @@ public abstract class AbstractGenericEntity implements GenericEntity {
 
 		@Override
 		public void elementMoved(CollectionElement<GenericEntity> element, Object moveData) {
+			if (theField.indexField != null)
+				element.get().set(theField.indexField, ((ListElement<?>) element).getElementsBefore());
 		}
 
 		void remove(GenericEntity entity) {

@@ -1,9 +1,14 @@
 package org.qommons.data.migration;
 
+import java.io.BufferedWriter;
 import java.io.IOException;
+import java.io.OutputStreamWriter;
+import java.io.Writer;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -13,14 +18,24 @@ import java.util.Set;
 import java.util.function.IntFunction;
 import java.util.regex.Pattern;
 
+import org.qommons.IterableUtils;
 import org.qommons.Named;
+import org.qommons.StringUtils;
 import org.qommons.collect.BetterCollection;
+import org.qommons.collect.BetterHashSet;
 import org.qommons.collect.BetterMap;
 import org.qommons.collect.BetterMultiMap;
+import org.qommons.collect.BetterSet;
 import org.qommons.collect.BetterSortedSet;
+import org.qommons.collect.CollectionElement;
 import org.qommons.collect.MultiEntryHandle;
 import org.qommons.collect.MultiMap;
+import org.qommons.config.QonfigApp;
+import org.qommons.config.QonfigInterpretationException;
+import org.qommons.config.QonfigParseException;
 import org.qommons.data.impl.MigratableDataSet;
+import org.qommons.data.migration.SchemaMigration.AddEntityMigration;
+import org.qommons.data.migration.SchemaMigration.AddEnumMigration;
 import org.qommons.data.types.EntityField;
 import org.qommons.data.types.EntityType;
 import org.qommons.data.types.EntityTypeSet;
@@ -29,13 +44,18 @@ import org.qommons.data.types.EnumValue;
 import org.qommons.data.types.FieldType;
 import org.qommons.data.types.FieldType.SimpleType;
 import org.qommons.data.types.modifiable.ModifiableEntityType;
+import org.qommons.data.types.modifiable.ModifiableEntityTypeSet;
 import org.qommons.data.values.DataSetModificationException;
 import org.qommons.data.values.GenericEntity;
 import org.qommons.data.values.GenericEntitySet;
 import org.qommons.ex.ExFunction;
+import org.qommons.io.BetterFile;
 import org.qommons.io.CsvParser;
-import org.qommons.io.FilePosition;
+import org.qommons.io.LocatedFilePosition;
+import org.qommons.io.LocatedPositionedContent;
+import org.qommons.io.PositionedContent;
 import org.qommons.io.TextParseException;
+import org.qommons.io.XmlSerialWriter;
 
 public class MigrationUtil {
 	public static class MigrationDiff {
@@ -387,54 +407,39 @@ public class MigrationUtil {
 		return diffs.isEmpty() ? null : new EnumTypeDiff(leftType, rightType, Collections.unmodifiableList(diffs));
 	}
 
-	public static void applyMigrationSet(MigratableDataSet dataSet, MigrationSet migrationSet)
-		throws IOException, TextParseException, MigrationException, DataSetModificationException {
-		Map<String, CustomMigrationComponent> migrators = new LinkedHashMap<>();
-		for (ConfigurableCustomMigrator<?> m : migrationSet.getMigrators().values()) {
-			try {
-				migrators.put(m.getName(), m.migrator.newInstance());
-			} catch (InstantiationException | IllegalAccessException | RuntimeException e) {
-				throw new MigrationException("Migrator " + m + " could not be instantiated",
-					m.configuration.getNamePosition().getPosition(0), e);
-			}
-		}
-		migrators = Collections.unmodifiableMap(migrators);
-		for (ConfigurableCustomMigrator<?> m : migrationSet.getMigrators().values()) {
-			try {
-				migrators.get(m).init(migrationSet, m.configuration, migrators);
-			} catch (RuntimeException e) {
-				throw new MigrationException("Migrator " + m + " could not be initialized",
-					m.configuration.getNamePosition().getPosition(0), e);
-			}
-		}
+	public static void applyMigrationSet(MigratableDataSet dataSet, MigrationSet migrationSet,
+		BetterSortedSet<? extends MigrationSetDef> applied) throws IOException, TextParseException, DataSetModificationException {
+		MigrationSession session = new MigrationSession(applied);
 		for (Migration migration : migrationSet.getMigrations()) {
-			migration.apply(dataSet, migrators);
+			migration.apply(dataSet, session);
 		}
 		dataSet.migrationApplied(migrationSet.toDef());
 	}
 
-	public static FieldType parseFieldType(String text, EntityTypeSet types, String creatingEntity, FilePosition source,
-		ExFunction<String, ModifiableEntityType, MigrationException> uncreated) throws MigrationException {
+	public static FieldType parseFieldType(LocatedPositionedContent text, EntityTypeSet types, CharSequence creatingEntity,
+		ExFunction<String, ModifiableEntityType, QonfigInterpretationException> uncreated) throws QonfigInterpretationException {
 		int paramIdx = text.indexOf('<');
 		if (paramIdx < 0)
 			paramIdx = text.indexOf('{');
 		if (paramIdx >= 0) {
+			FieldType<?>[] params = new FieldType[2];
 			int closeChar = text.charAt(paramIdx) + 2; // Weird, but this happens to work
 			if (text.charAt(text.length() - 1) != closeChar)
-				throw new MigrationException("Terminating '" + closeChar + "' expected", source);
-			String rawType = text.substring(0, paramIdx);
-			int commaIdx = text.indexOf(',', paramIdx + 1);
-			FieldType<?> firstType, secondType;
-			if (commaIdx >= 0) {
-				firstType = parseFieldType(text.substring(paramIdx + 1, commaIdx), types, creatingEntity, source, null);
-				secondType = parseFieldType(text.substring(commaIdx + 1, text.length() - 1).trim(), types, creatingEntity, source, null);
-			} else {
-				firstType = parseFieldType(text.substring(paramIdx + 1, text.length() - 1), types, creatingEntity, source, null);
-				secondType = null;
-			}
+				throw new QonfigInterpretationException("Terminating '" + closeChar + "' expected", text);
+			LocatedPositionedContent rawType = text.subSequence(0, paramIdx);
+			LocatedPositionedContent paramsText = text.subSequence(paramIdx + 1, text.length() - 1);
+			int paramCount = PositionedContent.split(paramsText, ',', paramText -> {
+				FieldType<?> param = parseFieldType(paramText, types, creatingEntity, uncreated);
+				if (params[0] == null)
+					params[0] = param;
+				else if (params[1] == null)
+					params[1] = param;
+				else
+					throw new QonfigInterpretationException("Too many type parameters--only 2 are possible", paramsText);
+			});
 			int expectedParamCount;
 			boolean distinct = false, sorted = false, multiValue = false;
-			switch (rawType) {
+			switch (rawType.toString()) {
 			case "List":
 				expectedParamCount = 1;
 				break;
@@ -466,16 +471,20 @@ public class MigrationUtil {
 				sorted = multiValue = true;
 				break;
 			default:
-				throw new MigrationException("Unrecognized raw type '" + rawType + "'", source);
+				throw new QonfigInterpretationException("Unrecognized raw type '" + rawType + "'", rawType);
 			}
-			if (expectedParamCount == 1)
-				return new FieldType.CollectionType<>(firstType, sorted, distinct);
+			if (paramCount != expectedParamCount)
+				throw new QonfigInterpretationException(
+					"Expected " + expectedParamCount + " parameters for raw type " + rawType + ", but encountered " + paramCount, text);
+			else if (expectedParamCount == 1)
+				return new FieldType.CollectionType<>(params[0], sorted, distinct);
 			else if (multiValue)
-				return new FieldType.MultiMapType<>(firstType, secondType, sorted);
+				return new FieldType.MultiMapType<>(params[0], params[1], sorted);
 			else
-				return new FieldType.MapType<>(firstType, secondType, sorted);
+				return new FieldType.MapType<>(params[0], params[1], sorted);
 		}
-		switch (text) {
+		String textStr = text.toString();
+		switch (textStr) {
 		case "boolean":
 			return SimpleType.BOOLEAN;
 		case "char":
@@ -501,29 +510,29 @@ public class MigrationUtil {
 		}
 		if (text.equals(creatingEntity))
 			return FieldType.SELF;
-		EntityType entity = types.getEntityType(text);
+		EntityType entity = types.getEntityType(textStr);
 		if (entity != null)
 			return entity;
-		EnumType enumType = types.getEnumType(text);
+		EnumType enumType = types.getEnumType(textStr);
 		if (enumType != null)
 			return enumType;
 		if (uncreated != null) {
-			entity = uncreated.apply(text);
+			entity = uncreated.apply(textStr);
 			if (entity != null)
 				return entity;
 		}
-		throw new MigrationException("Unrecognized type '" + text + "'", source);
+		throw new QonfigInterpretationException("Unrecognized type '" + text + "'", text);
 	}
 
 	public static <F> F parseFieldValue(CharSequence text, FieldType<F> fieldType, GenericEntitySet entities,
-		IntFunction<FilePosition> source) throws MigrationException {
+		IntFunction<LocatedFilePosition> source) throws QonfigInterpretationException {
 		if ("null".equals(text))
 			return null;
 		else if (fieldType instanceof EnumType) {
 			EnumType enumType = (EnumType) fieldType;
 			EnumValue value = enumType.getValue(text.toString());
 			if (value == null)
-				throw new MigrationException("No such enum value " + enumType + "." + text, source.apply(0));
+				throw new QonfigInterpretationException("No such enum value " + enumType + "." + text, source.apply(0), text.length());
 			return (F) value;
 		} else if (fieldType instanceof FieldType.SimpleType) {
 			return ((FieldType.SimpleType<F>) fieldType).parse(text.toString(), source);
@@ -542,7 +551,7 @@ public class MigrationUtil {
 	private static final Pattern DOUBLE_COMMA = Pattern.compile(",,");
 
 	private static GenericEntity parseEntity(EntityType type, CharSequence text, GenericEntitySet entities,
-		IntFunction<FilePosition> source) throws MigrationException {
+		IntFunction<LocatedFilePosition> source) throws QonfigInterpretationException {
 		Object[] id = new Object[type.getIdFields().size()];
 		int i = 0;
 		int pos = 0, line = 0, col = 0;
@@ -551,7 +560,7 @@ public class MigrationUtil {
 			try {
 				value = CsvParser.fromCsv(text, pos, line, col, ',');
 			} catch (TextParseException e) {
-				throw new MigrationException(e.getMessage(), source.apply(e.getErrorOffset()), e);
+				throw new QonfigInterpretationException(e.getMessage(), source.apply(e.getErrorOffset()), 0, e);
 			}
 			int fPos = pos;
 			id[i++] = parseFieldValue(value.parsed, field.getType(), entities, p -> source.apply(fPos + p));
@@ -559,22 +568,23 @@ public class MigrationUtil {
 			line = value.endLine;
 			col = value.endColumn;
 		}
+		if (entities == null)
+			return null; // Apparently just validating
 		GenericEntity found;
 		try {
 			found = entities.getEntity(type.getName(), id);
 		} catch (IOException e) {
-			throw new MigrationException("Unable to retrieve " + type.getName() + " with ID " + text.subSequence(0, pos), source.apply(0),
-				e);
+			throw new QonfigInterpretationException("Unable to retrieve " + type.getName() + " with ID " + text.subSequence(0, pos),
+				source.apply(0), pos, e);
 		}
 		if (found == null)
-			throw new MigrationException("No such " + type.getName() + " with ID " + text.subSequence(0, pos), source.apply(0));
+			throw new QonfigInterpretationException("No such " + type.getName() + " with ID " + text.subSequence(0, pos), source.apply(0),
+				pos);
 		return found;
 	}
 
-	private static final char NO_TERMINAL = (char) 0;
-
 	private static <E, C extends BetterCollection<E>> C parseCollection(CharSequence text, FieldType.CollectionType<E, C> fieldType,
-		GenericEntitySet entities, IntFunction<FilePosition> source) throws MigrationException {
+		GenericEntitySet entities, IntFunction<LocatedFilePosition> source) throws QonfigInterpretationException {
 		C collection = fieldType.createEmptyStructure();
 		int start = 0, line = 0, col = 0;
 		while (start < text.length()) {
@@ -582,7 +592,7 @@ public class MigrationUtil {
 			try {
 				csvValue = CsvParser.fromCsv(text, start, line, col, ',');
 			} catch (TextParseException e) {
-				throw new MigrationException(e.getMessage(), source.apply(e.getErrorOffset()), e);
+				throw new QonfigInterpretationException(e.getMessage(), source.apply(e.getErrorOffset()), 0, e);
 			}
 			int fPos = start;
 			collection.add(parseFieldValue(csvValue.parsed, fieldType.componentType, entities, p -> source.apply(fPos + p)));
@@ -594,7 +604,7 @@ public class MigrationUtil {
 	}
 
 	private static <K, V, M extends BetterMap<K, V>> M parseMap(CharSequence text, FieldType.MapType<K, V, M> fieldType,
-		GenericEntitySet entities, IntFunction<FilePosition> source) throws MigrationException {
+		GenericEntitySet entities, IntFunction<LocatedFilePosition> source) throws QonfigInterpretationException {
 		M map = fieldType.createEmptyStructure();
 		int start = 0, line = 0, col = 0;
 		while (start < text.length()) {
@@ -602,7 +612,7 @@ public class MigrationUtil {
 			try {
 				csvValue = CsvParser.fromCsv(text, start, line, col, '=');
 			} catch (TextParseException e) {
-				throw new MigrationException(e.getMessage(), source.apply(e.getErrorOffset()), e);
+				throw new QonfigInterpretationException(e.getMessage(), source.apply(e.getErrorOffset()), 0, e);
 			}
 			int keyPos = start;
 			K key = parseFieldValue(csvValue.parsed, fieldType.keyType, entities, p -> source.apply(keyPos + p));
@@ -613,7 +623,7 @@ public class MigrationUtil {
 			try {
 				csvValue = CsvParser.fromCsv(text, start, line, col, ',');
 			} catch (TextParseException e) {
-				throw new MigrationException(e.getMessage(), source.apply(e.getErrorOffset()), e);
+				throw new QonfigInterpretationException(e.getMessage(), source.apply(e.getErrorOffset()), 0, e);
 			}
 			int valuePos = start;
 			V value = parseFieldValue(csvValue.parsed, fieldType.valueType, entities, p -> source.apply(valuePos + p));
@@ -626,7 +636,7 @@ public class MigrationUtil {
 	}
 
 	private static <K, V, M extends BetterMultiMap<K, V>> M parseMultiMap(CharSequence text, FieldType.MultiMapType<K, V, M> fieldType,
-		GenericEntitySet entities, IntFunction<FilePosition> source) throws MigrationException {
+		GenericEntitySet entities, IntFunction<LocatedFilePosition> source) throws QonfigInterpretationException {
 		M map = fieldType.createEmptyStructure();
 		int start = 0, line = 0, col = 0;
 		while (start < text.length()) {
@@ -634,7 +644,7 @@ public class MigrationUtil {
 			try {
 				csvValue = CsvParser.fromCsv(text, start, line, col, '=');
 			} catch (TextParseException e) {
-				throw new MigrationException(e.getMessage(), source.apply(e.getErrorOffset()), e);
+				throw new QonfigInterpretationException(e.getMessage(), source.apply(e.getErrorOffset()), 0, e);
 			}
 			int keyPos = start;
 			K key = parseFieldValue(csvValue.parsed, fieldType.keyType, entities, p -> source.apply(keyPos + p));
@@ -647,7 +657,7 @@ public class MigrationUtil {
 				try {
 					csvValue = CsvParser.fromCsv(text, start, line, col, ',', ';');
 				} catch (TextParseException e) {
-					throw new MigrationException(e.getMessage(), source.apply(e.getErrorOffset()), e);
+					throw new QonfigInterpretationException(e.getMessage(), source.apply(e.getErrorOffset()), 0, e);
 				}
 				int valuePos = start;
 				V value = parseFieldValue(csvValue.parsed, fieldType.valueType, entities, p -> source.apply(valuePos + p));
@@ -825,5 +835,117 @@ public class MigrationUtil {
 			}
 		} else
 			throw new IllegalStateException("Field type " + type + " is not incrementable");
+	}
+
+	public static void writeSchema(EntityTypeSet dataTypes, BetterFile schemaFile) throws IOException {
+		try (Writer out = new BufferedWriter(new OutputStreamWriter(schemaFile.write(), StandardCharsets.UTF_8))) {
+			XmlSerialWriter.createDocument(out).setEncoding("UTF-8").writeRoot("entity-schema", root -> {
+				root.addAttribute("xmlns:core", QDMigrationCore.CORE);
+				// Enums first
+				for (EnumType enumType : dataTypes.getEnumTypes()) {
+					root.addChild("enum", enumXml -> {
+						enumXml.addAttribute("enum", enumType.getName());
+						for (EnumValue value : enumType.getValues())
+							enumXml.addChild("value", valueXml -> valueXml.addAttribute("value", value.getName()));
+					});
+				}
+
+				// Then entity types
+				for (EntityType entityType : dataTypes.getEntityTypes()) {
+					root.addChild("entity", entityXml -> {
+						entityXml.addAttribute("entity", entityType.getName());
+						if (entityType.getSuperTypes().isEmpty())
+							entityXml.addAttribute("id", StringUtils.print(",", entityType.getIdFields(), Named::getName).toString());
+						else
+							entityXml.addAttribute("super",
+								String.join(",", IterableUtils.map(entityType.getSuperTypes(), e -> e.getName())));
+						for (EntityField<?> field : entityType.getLocalFields()) {
+							entityXml.addChild("field", fieldXml -> {
+								fieldXml//
+									.addAttribute("field", field.getName())//
+								.addAttribute("type", field.getType().toString());
+								if (field.getMapping() != null) {
+									fieldXml.addChild("mapped", mappingXml -> {
+										mappingXml.addAttribute("by", field.getMapping().mappedReferenceField.getName());
+										if (field.getMapping().keyField != null)
+											mappingXml.addAttribute("key", field.getMapping().keyField.getName());
+										if (field.getMapping().indexField != null)
+											mappingXml.addAttribute("index", field.getMapping().indexField.getName());
+										if (field.getMapping().sortByField != null)
+											mappingXml.addAttribute("sort-by", field.getMapping().sortByField.getName());
+									});
+								}
+							});
+						}
+					});
+				}
+			});
+		}
+	}
+
+	private static class ParsingEntityType {
+		final SchemaMigration.AddEntityMigration add;
+		boolean parsed;
+
+		ParsingEntityType(AddEntityMigration add) {
+			this.add = add;
+		}
+	}
+
+	public static ModifiableEntityTypeSet readSchema(BetterFile schemaFile) throws IOException, TextParseException {
+		EntitySchema schema;
+		try {
+			schema = QonfigApp.build()//
+				.withToolkit(QDMigrationCore.CORE_MIGRATIONS.get())//
+				.withInterpretation(new QDMigrationCore())//
+				.build(schemaFile.toUrl().toString(), schemaFile.getName())//
+				.interpretApp(EntitySchema.class);
+		} catch (QonfigParseException e) {
+			throw new TextParseException(e.getMessage(), e.getIssues().get(0).fileLocation);
+		}
+
+		ModifiableEntityTypeSet typeSet = new ModifiableEntityTypeSet();
+		// Enums first because they're easy
+		for (AddEnumMigration migration : schema.getEnums()) {
+			migration.applySchemaChange(typeSet);
+		}
+
+		// Now entities
+		Map<String, ParsingEntityType> entityTypes = new HashMap<>();
+		for (AddEntityMigration migration : schema.getEntities()) {
+			entityTypes.put(migration.entityName.toString(), new ParsingEntityType(migration));
+		}
+		BetterSet<String> path = BetterHashSet.create();
+		for (ParsingEntityType type : entityTypes.values()) {
+			if (!type.parsed)
+				createEntityType(type, typeSet, entityTypes, path);
+		}
+		for (ModifiableEntityType type : typeSet.getEntityTypes()) {
+			ParsingEntityType add = entityTypes.get(type.getName());
+			for (SchemaMigration.AddFieldMigration field : add.add.fields.values()) {
+				if (!add.add.idFieldNames.contains(field.fieldName))
+					field.applySchemaChange(typeSet);
+			}
+		}
+		return typeSet;
+	}
+
+	private static ModifiableEntityType createEntityType(ParsingEntityType add, ModifiableEntityTypeSet typeSet,
+		Map<String, ParsingEntityType> parsing, BetterSet<String> path) throws QonfigInterpretationException {
+		CollectionElement<String> pathAdded = path.addElement(add.add.entityName.toString(), null, null, false);
+		if (pathAdded == null)
+			throw new QonfigInterpretationException("Entity ID cycle: " + path, add.add.getPosition());
+		try {
+			return add.add.createEntityType(typeSet, str -> {
+				ParsingEntityType p = parsing.get(str);
+				if (p == null)
+					return null;
+				else
+					return createEntityType(p, typeSet, parsing, path);
+			});
+		} finally {
+			add.parsed = true;
+			path.mutableElement(pathAdded.getElementId()).remove();
+		}
 	}
 }

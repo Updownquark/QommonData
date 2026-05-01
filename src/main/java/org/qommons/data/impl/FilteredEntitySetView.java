@@ -227,6 +227,11 @@ public class FilteredEntitySetView implements GenericEntitySet {
 		}
 
 		@Override
+		public boolean isDeleted() {
+			return theSource.isDeleted();
+		}
+
+		@Override
 		public String toString() {
 			return theSource.toString();
 		}

@@ -22,14 +22,14 @@ import org.qommons.collect.ListElement;
 import org.qommons.collect.MappedBetterSet;
 import org.qommons.collect.MappedBetterSortedSet;
 import org.qommons.collect.MappedSet;
-import org.qommons.data.migration.MigrationException;
+import org.qommons.config.QonfigInterpretationException;
 import org.qommons.data.types.EntityField;
 import org.qommons.data.types.EntityType;
 import org.qommons.data.types.EntityTypeSet;
 import org.qommons.data.types.EnumValue;
 import org.qommons.data.types.FieldType;
 import org.qommons.data.values.GenericEntity;
-import org.qommons.io.FilePosition;
+import org.qommons.io.LocatedPositionedContent;
 import org.qommons.tree.BetterTreeMultiMap;
 import org.qommons.tree.BetterTreeSet;
 
@@ -45,14 +45,14 @@ public class ModifiableEntityType implements EntityType {
 	private final BetterMultiMap<ModifiableEntityType, ModifiableEntityField<GenericEntity>> theReferences;
 	private final Unmodifiable theUnmodifiable;
 
-	ModifiableEntityType(ModifiableEntityTypeSet typeSet, ModifiableEntityType[] superTypes, String name, FilePosition source)
-		throws MigrationException {
+	ModifiableEntityType(ModifiableEntityTypeSet typeSet, ModifiableEntityType[] superTypes, LocatedPositionedContent name)
+		throws QonfigInterpretationException {
 		theTypeSet = typeSet;
 		if (superTypes.length == 1)
 			theSuperTypes = BetterSet.single(superTypes[0]);
 		else
 			theSuperTypes = BetterCollections.unmodifiableSet(BetterHashSet.<ModifiableEntityType> create().with(superTypes));
-		theName = name;
+		theName = name.toString();
 		theLocalFields = BetterTreeSet.createTreeSet(Named.DISTINCT_NUMBER_TOLERANT);
 		allFields = BetterTreeSet.createTreeSet(Named.DISTINCT_NUMBER_TOLERANT);
 		ModifiableEntityType firstSuperRoot = null;
@@ -60,13 +60,13 @@ public class ModifiableEntityType implements EntityType {
 			if (firstSuperRoot == null)
 				firstSuperRoot = sup.getRootType();
 			else if (firstSuperRoot != sup.getRootType())
-				throw new MigrationException("All super types must extend the same root type: " + sup + " does not extend " + firstSuperRoot
-					+ " as " + superTypes[0] + " does", source);
+				throw new QonfigInterpretationException("All super types must extend the same root type: " + sup + " does not extend "
+					+ firstSuperRoot + " as " + superTypes[0] + " does", name);
 			for (ModifiableEntityField<?> field : sup.getFields()) {
 				CollectionElement<ModifiableEntityField<?>> el = allFields.getOrAdd(field, null, null, false, null, null);
 				if (el.get() != field)
-					throw new MigrationException("Super types '" + el.get().getOwner() + "' is incompatible with '" + sup
-						+ "': Conflicting fields named '" + field.getName() + "'", source);
+					throw new QonfigInterpretationException("Super types '" + el.get().getOwner() + "' is incompatible with '" + sup
+						+ "': Conflicting fields named '" + field.getName() + "'", name);
 			}
 			sup.theSubTypes.add(this);
 		}
@@ -80,20 +80,20 @@ public class ModifiableEntityType implements EntityType {
 		theUnmodifiable = new Unmodifiable(this);
 	}
 
-	ModifiableEntityType(ModifiableEntityTypeSet typeSet, String name, Map<String, FieldType<?>> id, FilePosition source)
-		throws MigrationException {
+	ModifiableEntityType(ModifiableEntityTypeSet typeSet, LocatedPositionedContent name, Map<LocatedPositionedContent, FieldType<?>> id)
+		throws QonfigInterpretationException {
 		theTypeSet = typeSet;
 		theSuperTypes = BetterSet.empty();
-		theName = name;
+		theName = name.toString();
 		theLocalFields = BetterTreeSet.createTreeSet(Named.DISTINCT_NUMBER_TOLERANT);
 		allFields = BetterCollections.unmodifiableSortedSet(theLocalFields);
 		theSubTypes = BetterTreeSet.createTreeSet(Named.DISTINCT_NUMBER_TOLERANT);
 		ModifiableEntityField<?>[] idFieldArray = new ModifiableEntityField[id.size()];
 		int f = 0;
-		for (Map.Entry<String, FieldType<?>> field : id.entrySet()) {
+		for (Map.Entry<LocatedPositionedContent, FieldType<?>> field : id.entrySet()) {
 			try {
-				idFieldArray[f++] = addField(field.getKey(), field.getValue(), null, true, source);
-			} catch (MigrationException e) {
+				idFieldArray[f++] = addField(field.getKey(), field.getValue(), null, true);
+			} catch (QonfigInterpretationException e) {
 				for (ModifiableEntityField<?> f2 : theLocalFields)
 					f2.delete();
 				throw e;
@@ -122,8 +122,8 @@ public class ModifiableEntityType implements EntityType {
 		return theName;
 	}
 
-	public ModifiableEntityType setName(String newName, FilePosition source) throws MigrationException {
-		theTypeSet.renameEntity(this, newName, source);
+	public ModifiableEntityType setName(LocatedPositionedContent newName) throws QonfigInterpretationException {
+		theTypeSet.renameEntity(this, newName);
 		return this;
 	}
 
@@ -193,61 +193,65 @@ public class ModifiableEntityType implements EntityType {
 		return theUnmodifiable;
 	}
 
-	public void delete(FilePosition source) throws MigrationException {
+	public void delete(LocatedPositionedContent source) throws QonfigInterpretationException {
 		if (!theReferences.isEmpty()) {
 			StringBuilder str = new StringBuilder("There are ").append(theReferences.valueSize())
 				.append(" entity fields that reference entity type ").append(theName);
 			for (ModifiableEntityField<GenericEntity> field : theReferences.values())
 				str.append("\n\t").append(field);
-			throw new MigrationException(str.toString(), source);
+			throw new QonfigInterpretationException(str.toString(), source);
 		}
 		theTypeSet.removeEntity(this);
 	}
 
-	private void checkNewField(String fieldName, FilePosition source, ModifiableEntityType fromSuperType) throws MigrationException {
-		ModifiableEntityField<?> clash = allFields.searchValue(f -> StringUtils.compareNumberTolerant(fieldName, f.getName(), true, true),
+	private void checkNewField(LocatedPositionedContent fieldName, ModifiableEntityType fromSuperType)
+		throws QonfigInterpretationException {
+		String fieldStr = fieldName.toString();
+		ModifiableEntityField<?> clash = allFields.searchValue(f -> StringUtils.compareNumberTolerant(fieldStr, f.getName(), true, true),
 			SortedSearchFilter.OnlyMatch);
 		if (clash != null) {
 			if (clash.getOwner() == this) {
 				if (fromSuperType != null)
-					throw new MigrationException(
-						"Field " + theName + "." + fieldName + " clashes with a field of sub-type '" + theName + "'", source);
+					throw new QonfigInterpretationException(
+						"Field " + theName + "." + fieldStr + " clashes with a field of sub-type '" + theName + "'", fieldName);
 				else
-					throw new MigrationException("A " + theName + " field named '" + fieldName + "' already exists", source);
+					throw new QonfigInterpretationException("A " + theName + " field named '" + fieldStr + "' already exists", fieldName);
 			} else {
 				if (fromSuperType != null)
-					throw new MigrationException("Field " + theName + "." + fieldName + " clashes with a field of sub-type '" + theName
-						+ "' which inherits " + clash, source);
+					throw new QonfigInterpretationException(
+						"Field " + theName + "." + fieldStr + " clashes with a field of sub-type '" + theName + "' which inherits " + clash,
+						fieldName);
 				else
-					throw new MigrationException(
-						"Field name " + theName + "." + fieldName + " clashes with a field of super-type '" + clash.getOwner(), source);
+					throw new QonfigInterpretationException(
+						"Field name " + theName + "." + fieldStr + " clashes with a field of super-type '" + clash.getOwner(), fieldName);
 			}
 		}
 		for (ModifiableEntityType subType : theSubTypes)
-			subType.checkNewField(fieldName, source, this);
+			subType.checkNewField(fieldName, this);
 	}
 
-	public <F> ModifiableEntityField<F> addField(String name, FieldType<F> type, FieldMappingPrecursor<?, ?> mapping, FilePosition source)
-		throws MigrationException {
-		return addField(name, type, mapping, false, source);
+	public <F> ModifiableEntityField<F> addField(LocatedPositionedContent name, FieldType<F> type, FieldMappingPrecursor<?, ?> mapping)
+		throws QonfigInterpretationException {
+		return addField(name, type, mapping, false);
 	}
 
-	public <F> ModifiableEntityField<F> addField(String name, FieldType<F> type, FieldMappingPrecursor<?, ?> mapping, boolean id,
-		FilePosition source) throws MigrationException {
-		checkNewField(name, source, null);
+	private <F> ModifiableEntityField<F> addField(LocatedPositionedContent name, FieldType<F> type, FieldMappingPrecursor<?, ?> mapping,
+		boolean id) throws QonfigInterpretationException {
+		checkNewField(name, null);
 		if (type == FieldType.SELF)
 			type = (FieldType<F>) this;
 		if (mapping != null) {
 			if (mapping.mappedReferenceField.getMappingReference() != null)
-				throw new MigrationException(
+				throw new QonfigInterpretationException(
 					"Mapped reference field " + mapping.mappedReferenceField.getOwner() + "." + mapping.mappedReferenceField.getName()
 					+ " is already mapped to " + mapping.mappedReferenceField.getMappingReference().parentField,
-					source);
+					name);
 			if (mapping.indexField != null && mapping.indexField.getIndexReference() != null)
-				throw new MigrationException("Mapped index field " + mapping.indexField.getOwner() + "." + mapping.indexField.getName()
-				+ " is already the index for " + mapping.indexField.getIndexReference().parentField, source);
+				throw new QonfigInterpretationException("Mapped index field " + mapping.indexField.getOwner() + "."
+					+ mapping.indexField.getName() + " is already the index for " + mapping.indexField.getIndexReference().parentField,
+					name);
 		}
-		ModifiableEntityField<F> field = new ModifiableEntityField<>(this, name, type, id, mapping, source);
+		ModifiableEntityField<F> field = new ModifiableEntityField<>(this, name.toString(), type, id, mapping);
 		addLocalField(field);
 		for (ModifiableEntityType subType : theSubTypes)
 			subType.addInheritedField(field);
@@ -287,6 +291,7 @@ public class ModifiableEntityType implements EntityType {
 	private void removeLocalField(ModifiableEntityField<?> field) {
 		ListElement<ModifiableEntityField<?>> remove = theLocalFields.getElement(field, true);
 		theLocalFields.mutableElement(remove.getElementId()).remove();
+		theFieldIndexes.remove(field);
 		if (theSubTypes.isEmpty()) { // We're a root type, so allFields is an unmodifiable view of theLocalFields
 			regenFieldIndexes(remove.getAdjacent(true));
 		} else {
@@ -306,17 +311,18 @@ public class ModifiableEntityType implements EntityType {
 	private void removeInheritedField(ModifiableEntityField<?> field) {
 		ListElement<ModifiableEntityField<?>> removed = allFields.getElement(field, true);
 		allFields.mutableElement(removed.getElementId()).remove();
+		theFieldIndexes.remove(field);
 		regenFieldIndexes(removed.getAdjacent(true));
 		for (ModifiableEntityType subType : theSubTypes)
 			subType.removeInheritedField(field);
 	}
 
-	void renameField(ModifiableEntityField<?> field, String newName, FilePosition source) throws MigrationException {
-		checkNewField(newName, source, null);
+	void renameField(ModifiableEntityField<?> field, LocatedPositionedContent newName) throws QonfigInterpretationException {
+		checkNewField(newName, null);
 		removeLocalField(field);
 		for (ModifiableEntityType subType : theSubTypes)
 			subType.removeInheritedField(field);
-		field.doSetName(newName);
+		field.doSetName(newName.toString());
 		addLocalField(field);
 		for (ModifiableEntityType subType : theSubTypes)
 			subType.addInheritedField(field);

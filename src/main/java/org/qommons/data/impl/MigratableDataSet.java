@@ -24,9 +24,9 @@ public interface MigratableDataSet extends GenericEntitySet {
 
 	<F> void entityFieldAdded(EntityField<F> field, F initValue) throws DataSetModificationException;
 
-	void entityFieldRemoved(EntityField field) throws DataSetModificationException;
+	void entityFieldRemoved(EntityField<?> field) throws DataSetModificationException;
 
-	void entityFieldRenamed(EntityField field, String oldName) throws DataSetModificationException;
+	void entityFieldRenamed(EntityField<?> field, String oldName) throws DataSetModificationException;
 
 	/**
 	 * Called when data for an entity may have been indirectly affected, such as due to the renaming of an enum value

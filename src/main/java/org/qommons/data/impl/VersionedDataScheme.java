@@ -2,6 +2,7 @@ package org.qommons.data.impl;
 
 import java.io.BufferedWriter;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.OutputStream;
 import java.io.OutputStreamWriter;
 import java.io.Writer;
@@ -29,23 +30,24 @@ import java.util.regex.Pattern;
 
 import org.qommons.ClassMap.TypeMatch;
 import org.qommons.IterableUtils;
-import org.qommons.TimeUtils;
+import org.qommons.collect.BetterCollections;
+import org.qommons.collect.BetterSortedList.SortedSearchFilter;
 import org.qommons.collect.BetterSortedSet;
 import org.qommons.collect.MultiMap;
+import org.qommons.config.QonfigApp;
+import org.qommons.config.QonfigParseException;
 import org.qommons.data.impl.DataSetMigrationException.MigrationFailureCause;
 import org.qommons.data.mapping.EntityFieldMapping;
 import org.qommons.data.mapping.EntityTypeMapping;
 import org.qommons.data.mapping.EntityTypeSetMapping;
 import org.qommons.data.mapping.MappedEntitySet;
 import org.qommons.data.mapping.MappedEntitySet.EntityMapping;
-import org.qommons.data.migration.Migration;
-import org.qommons.data.migration.MigrationException;
-import org.qommons.data.migration.MigrationPersistence;
 import org.qommons.data.migration.MigrationSet;
 import org.qommons.data.migration.MigrationSetDef;
 import org.qommons.data.migration.MigrationUtil;
 import org.qommons.data.migration.MigrationUtil.MigrationDiff;
-import org.qommons.data.migration.SchemaMigration;
+import org.qommons.data.migration.QDMigrationCore;
+import org.qommons.data.migration.SchemaHistory;
 import org.qommons.data.types.EntityType;
 import org.qommons.data.types.EntityTypeSet;
 import org.qommons.data.types.EnumType;
@@ -56,10 +58,12 @@ import org.qommons.data.values.EntitySetPersistence;
 import org.qommons.data.values.GenericEntity;
 import org.qommons.data.values.GenericEntitySet;
 import org.qommons.ex.ExFunction;
+import org.qommons.fn.FunctionUtils;
 import org.qommons.io.BetterFile;
 import org.qommons.io.CsvParser;
 import org.qommons.io.FileUtils;
 import org.qommons.io.InMemoryFileSystem;
+import org.qommons.io.MinML;
 import org.qommons.io.TabularFileParser;
 import org.qommons.io.TemporalBackupScheme;
 import org.qommons.io.TextParseException;
@@ -233,7 +237,7 @@ public class VersionedDataScheme {
 		public RollingEntitySetPersistence saveSchema(Collection<? extends MigrationSetDef> migrations) throws IOException {
 			BetterFile schemaFile = persistenceDir.at(DATA_SCHEMA);
 			try (OutputStream out = schemaFile.write()) {
-				MigrationPersistence.writeSchema(entityTypes, schemaFile);
+				MigrationUtil.writeSchema(entityTypes, schemaFile);
 			}
 			writeMigrations(migrations, persistenceDir);
 			return this;
@@ -536,25 +540,56 @@ public class VersionedDataScheme {
 		}
 	}
 
+	private interface SchemaHistoryProducer {
+		SchemaHistory getSchema() throws IOException, TextParseException, QonfigParseException;
+	}
+
 	public static InitializedDataScheme init(Set<Class<?>> entityTypes, EntityTypeSetMapping.EntityMappingScheme<?> entityRecognizer,
 		BetterFile codeMigrations) throws IOException, TextParseException {
-		BetterSortedSet<MigrationSet> migrations = MigrationPersistence.parseMigrationSets(codeMigrations);
-		ModifiableEntityTypeSet migrationSchema = new ModifiableEntityTypeSet();
-		for (MigrationSet migrationSet : migrations) {
-			for (Migration migration : migrationSet.getMigrations()) {
-				if (migration instanceof SchemaMigration)
-					((SchemaMigration) migration).applyToSchema(migrationSchema);
+		// We allow this to be either a Qonfig app file, configuring all the toolkits and interpreters it wants,
+		// or it can just be a migration file that just uses the core toolkit.
+		SchemaHistoryProducer viaApp = () -> QonfigApp.parseApp(codeMigrations.toUrl())//
+			.interpretApp(SchemaHistory.class);
+		SchemaHistoryProducer coreOnly = () -> QonfigApp.build()//
+			.withToolkit(QDMigrationCore.CORE_MIGRATIONS.get())//
+			.withInterpretation(new QDMigrationCore())//
+			.build(codeMigrations.toUrl().toString(), codeMigrations.getName())//
+			.interpretApp(SchemaHistory.class);
+		// We'll use the root name to make a guess as to which one it is, but we'll try the other if our guess doesn't work.
+		String rootName;
+		try (InputStream in = codeMigrations.read()) {
+			rootName = new MinML().parseByComponent(codeMigrations.getPath(), in).startNextElement(null, true).getName();
+		}
+		SchemaHistoryProducer first, second;
+		if (rootName.endsWith("-app")) {
+			first = viaApp;
+			second = coreOnly;
+		} else {
+			first = coreOnly;
+			second = viaApp;
+		}
+		SchemaHistory schema;
+		try {
+			schema = first.getSchema();
+		} catch (QonfigParseException | TextParseException | RuntimeException e) {
+			// Try the alternate
+			try {
+				schema = second.getSchema();
+			} catch (QonfigParseException | TextParseException | RuntimeException e2) {
+				TextParseException ex = new TextParseException(e.getMessage(), null, e);
+				ex.addSuppressed(e2);
+				throw ex;
 			}
 		}
 		EntityTypeSetMapping mapping;
 		try {
-			mapping = EntityTypeSetMapping.parseTypeSet(migrationSchema.unmodifiableView(), entityTypes, entityRecognizer);
+			mapping = EntityTypeSetMapping.parseTypeSet(schema.getTypeSet().unmodifiableView(), entityTypes, entityRecognizer);
 		} catch (EntityTypeSetMapping.TypeSetMappingException e) {
-			throw new MigrationException(
+			throw new TextParseException(
 				e.diff.print(new StringBuilder("The entity classes in code are incompatible with the documented schema:\n")).toString(),
 				null, e);
 		}
-		return new InitializedDataScheme(mapping, migrations);
+		return new InitializedDataScheme(mapping, schema.getMigrations());
 	}
 
 	private static final Pattern US_SUFFIX = Pattern.compile("(?<content>.{" + VERSION_DIR_PATTERN.length() + "})_\\d+");
@@ -574,7 +609,9 @@ public class VersionedDataScheme {
 			try {
 				LocalDateTime localTime = LocalDateTime.parse(dirTimeStr, VERSION_DIR_FORMAT);
 				dirTime = localTime.atOffset(ZoneOffset.UTC).toInstant();
-				versionDirs.put(dirTime, dir);
+				// Now see if the directory time matches a migration in this data set
+				if (migrations.search(migSet -> dirTime.compareTo(migSet.date), SortedSearchFilter.OnlyMatch) != null)
+					versionDirs.put(dirTime, dir);
 			} catch (DateTimeParseException e) { // No worries, just a non-data directory
 				e.printStackTrace(); // TODO DELETE ME
 			}
@@ -590,12 +627,10 @@ public class VersionedDataScheme {
 		}
 		PersistedEntitySet currentData = null;
 		for (Map.Entry<Instant, BetterFile> versionDir : versionDirs.descendingMap().entrySet()) {
-			if (TimeUtils.between(versionDir.getKey(), migrations.getLast().date).compareTo(ONE_SECOND) < 0) {
-				// See if this data dir is up-to-date or can be migrated
-				currentData = tryToUseDir(versionDir.getValue(), true, newDataDir, codeTypes, migrations, persistence);
-				if (currentData != null)
-					break;
-			}
+			// See if this data dir is up-to-date or can be migrated
+			currentData = tryToUseDir(versionDir.getValue(), true, newDataDir, codeTypes, migrations, persistence);
+			if (currentData != null)
+				break;
 		}
 		if (currentData == null) {
 			if (initDataDir != null)
@@ -656,7 +691,7 @@ public class VersionedDataScheme {
 			.with("author", false, ExFunction.identity())//
 			.with("date", false, (str, p) -> {
 				try {
-					return MigrationPersistence.parseMigrationTime(str);
+					return QDMigrationCore.parseMigrationTime(str);
 				} catch (DateTimeParseException e) { // No worries, just a non-data directory
 					throw new ParseException("Could not parse " + p.getColumnName(1) + " as a date", p.getPosition(1).getPosition());
 				}
@@ -685,7 +720,7 @@ public class VersionedDataScheme {
 		}
 		ModifiableEntityTypeSet dataTypes;
 		try {
-			dataTypes = MigrationPersistence.readSchema(schemaFile);
+			dataTypes = MigrationUtil.readSchema(schemaFile);
 		} catch (TextParseException e) {
 			throw new DataSetMigrationException(MigrationFailureCause.InvalidDataSet, "Unable to read data schema", e);
 		}
@@ -695,10 +730,14 @@ public class VersionedDataScheme {
 		} catch (TextParseException e) {
 			throw new DataSetMigrationException(MigrationFailureCause.InvalidDataSet, "Unable to read data content", e);
 		}
+		BetterSortedSet<MigrationSetDef> appliedMigrations = BetterTreeSet.createTreeSet(FunctionUtils.COMPARABLE_COMPARE);
+		appliedMigrations.addAll(migrationDiff.dataSourceAppliedMigration);
+		BetterSortedSet<MigrationSetDef> exposedMigrations = BetterCollections.unmodifiableSortedSet(appliedMigrations);
 		for (MigrationSet migration : migrationDiff.unappliedMigrations) {
 			try {
 				System.out.println("Applying migration " + migration.author + "@" + migration.date + ": " + migration.getDescription());
-				MigrationUtil.applyMigrationSet(dataSet, migration);
+				MigrationUtil.applyMigrationSet(dataSet, migration, exposedMigrations);
+				appliedMigrations.add(migration);
 			} catch (IOException | TextParseException | DataSetModificationException e) {
 				throw new IllegalStateException("Unable to migrate data", e);
 			}
@@ -715,7 +754,7 @@ public class VersionedDataScheme {
 		EntitySetPersistence persistence) throws IOException, TextParseException {
 		if (!directory.isDirectory())
 			directory.create(true);
-		MigrationPersistence.writeSchema(dataSet.getTypes(), directory.at(DATA_SCHEMA));
+		MigrationUtil.writeSchema(dataSet.getTypes(), directory.at(DATA_SCHEMA));
 		writeMigrations(migrations, directory);
 		persistence.persist(dataSet, directory);
 	}
@@ -726,7 +765,7 @@ public class VersionedDataScheme {
 			for (MigrationSetDef migration : migrations) {
 				out.write(CsvParser.toCsv(migration.author, ','));
 				out.write(',');
-				out.write(CsvParser.toCsv(MigrationPersistence.NO_TZ_DATE_FORMAT.format(migration.date), ','));
+				out.write(CsvParser.toCsv(QDMigrationCore.NO_TZ_DATE_FORMAT.format(migration.date), ','));
 				out.write(',');
 				out.write(CsvParser.toCsv(migration.getDescription(), ','));
 				out.write('\n');

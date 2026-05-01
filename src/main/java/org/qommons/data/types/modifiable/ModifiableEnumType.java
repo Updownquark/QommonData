@@ -11,12 +11,12 @@ import org.qommons.collect.BetterMultiMap;
 import org.qommons.collect.BetterSortedSet;
 import org.qommons.collect.MappedBetterSortedSet;
 import org.qommons.collect.MappedSet;
-import org.qommons.data.migration.MigrationException;
+import org.qommons.config.QonfigInterpretationException;
 import org.qommons.data.types.EntityField;
 import org.qommons.data.types.EntityType;
 import org.qommons.data.types.EnumType;
 import org.qommons.data.types.EnumValue;
-import org.qommons.io.FilePosition;
+import org.qommons.io.LocatedPositionedContent;
 import org.qommons.tree.BetterTreeSet;
 
 public class ModifiableEnumType implements EnumType {
@@ -39,10 +39,8 @@ public class ModifiableEnumType implements EnumType {
 		return theName;
 	}
 
-	public ModifiableEnumType setName(String newName, FilePosition source) throws MigrationException {
-		if (theTypeSet.getEnumType(newName) != null)
-			throw new MigrationException("Another enum type named '" + newName + "' already exists", source);
-		theTypeSet.renameEnum(this, newName, source);
+	public ModifiableEnumType setName(LocatedPositionedContent newName) throws QonfigInterpretationException {
+		theTypeSet.renameEnum(this, newName);
 		return this;
 	}
 
@@ -74,29 +72,30 @@ public class ModifiableEnumType implements EnumType {
 		return theUnmodifiable;
 	}
 
-	public ModifiableEnumValue addValue(String name, FilePosition source) throws MigrationException {
-		ModifiableEnumValue newValue = new ModifiableEnumValue(this, name);
+	public ModifiableEnumValue addValue(LocatedPositionedContent name) throws QonfigInterpretationException {
+		ModifiableEnumValue newValue = new ModifiableEnumValue(this, name.toString());
 		if (!theValues.add(newValue))
-			throw new MigrationException("A value named '" + name + "' already exists in enum '" + theName + "'", source);
+			throw new QonfigInterpretationException("A value named '" + name + "' already exists in enum '" + theName + "'", name);
 		return newValue;
 	}
 
-	public void delete(FilePosition source) throws MigrationException {
+	public void delete(LocatedPositionedContent source) throws QonfigInterpretationException {
 		if (!theReferences.isEmpty()) {
 			StringBuilder str = new StringBuilder("There are ").append(theReferences.valueSize())
 				.append(" entity fields that reference enum ").append(theName);
 			for (ModifiableEntityField<EnumValue> field : theReferences.values())
 				str.append("\n\t").append(field);
-			throw new MigrationException(str.toString(), source);
+			throw new QonfigInterpretationException(str.toString(), source);
 		}
 		theTypeSet.removeEnum(this);
 	}
 
-	void renameValue(ModifiableEnumValue value, String newName, FilePosition source) throws MigrationException {
-		if (getValue(newName) != null)
-			throw new MigrationException("Another " + theName + " value named '" + newName + "' already exists", source);
+	void renameValue(ModifiableEnumValue value, LocatedPositionedContent newName) throws QonfigInterpretationException {
+		String nameStr = newName.toString();
+		if (getValue(nameStr) != null)
+			throw new QonfigInterpretationException("Another " + theName + " value named '" + nameStr + "' already exists", newName);
 		theValues.remove(value);
-		value.doSetName(newName);
+		value.doSetName(nameStr);
 		theValues.add(value);
 	}
 

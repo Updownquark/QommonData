@@ -1,21 +1,18 @@
 package org.qommons.data.migration;
 
 import java.io.IOException;
-import java.util.Map;
 
 import org.qommons.data.impl.MigratableDataSet;
-import org.qommons.data.types.modifiable.ModifiableEntityTypeSet;
 import org.qommons.data.values.DataSetModificationException;
-import org.qommons.io.FilePosition;
+import org.qommons.io.LocatedPositionedContent;
 import org.qommons.io.TextParseException;
 
 public interface Migration {
-	FilePosition getPosition();
+	public static final String MIGRATION_SET_KEY = "Migration Set";
 
 	MigrationSet getMigrationSet();
 
-	void validate(ModifiableEntityTypeSet entities, Map<String, CustomMigrationComponent> migrators) throws MigrationException;
+	LocatedPositionedContent getPosition();
 
-	void apply(MigratableDataSet dataSet, Map<String, CustomMigrationComponent> migrators)
-		throws IOException, TextParseException, MigrationException, DataSetModificationException;
+	void apply(MigratableDataSet dataSet, MigrationSession session) throws IOException, TextParseException, DataSetModificationException;
 }

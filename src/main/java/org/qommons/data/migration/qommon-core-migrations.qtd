@@ -1,0 +1,138 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<?DOC Defines the core set of migration types for defining and maintaining data sets with the Qommon Data toolkit?>
+<qonfig-def name="QMigration-Core" version="0.9">
+	<value-types>
+		<?DOC A name for a variable?>
+		<pattern name="identifier">[_a-zA-Z$][_a-zA-Z0-9$]*</pattern>
+		
+		<?DOC A list of comma-separated variable names?>
+		<pattern name="identifier-set">([_a-zA-Z$][_a-zA-Z0-9$]*,)*[_a-zA-Z$][_a-zA-Z0-9$]*</pattern>
+		
+		<?DOC A path of dot-separated variable names?>
+		<pattern name="identifier-path">([_a-zA-Z$][_a-zA-Z0-9$]*\.)*[_a-zA-Z$][_a-zA-Z0-9$]*</pattern>
+		
+		<pattern name="date">\d\d[A-Za-z]{3}\d{4} \d\d:\d\d:\d\d( [A-Za-z/]+)?</pattern>
+	</value-types>
+	<add-ons>
+		<add-on name="rename-migration" abstract="true">
+			<attribute name="rename-to" type="identifier" />
+		</add-on>
+	</add-ons>
+	<elements>
+		<element-def name="schema-history">
+			<child-def name="migrations" type="migration-set" max="inf" />
+		</element-def>
+		<element-def name="migration-def">
+			<attribute name="author" type="string" />
+			<attribute name="date" type="date" />
+		</element-def>
+		<element-def name="migration-set" extends="migration-def">
+			<attribute name="description" type="string" />
+			
+			<child-def name="migrations" type="migration" max="inf" />
+		</element-def>
+		<element-def name="entity-schema">
+			<child-def name="enums" type="enum" max="inf" />
+			<child-def name="entities" type="entity" max="inf" />
+		</element-def>
+		
+		<element-def name="migration" abstract="true" />
+		<element-def name="schema-migration" extends="migration" abstract="true" />
+		
+		<element-def name="entity-type-migration" extends="schema-migration" abstract="true">
+			<attribute name="entity" type="identifier" />
+		</element-def>
+		<element-def name="add-entity" extends="entity-type-migration">
+			<attribute name="super" type="identifier-set" specify="optional" />
+			<attribute name="id" type="identifier-set" specify="optional" />
+			<child-def name="field" type="field" max="inf" />
+		</element-def>
+		<?DOC Basically an alias of <add-entity> for use in an <entity-schema> migration?>
+		<element-def name="entity" extends="entity-type-migration">
+			<attribute name="super" type="identifier-set" specify="optional" />
+			<attribute name="id" type="identifier-set" specify="optional" />
+			<child-def name="field" type="field" max="inf" />
+		</element-def>
+		<element-def name="remove-entity" extends="entity-type-migration">
+			<child-def name="moveTo" type="move-to" min="0" />
+		</element-def>
+		<element-def name="move-to">
+			<attribute name="target" type="identifier" />
+			<child-def name="migrator" type="entity-move-migrator" />
+		</element-def>
+		<element-def name="entity-move-migrator" abstract="true" />
+		<element-def name="rename-entity" extends="entity-type-migration" inherits="rename-migration" />
+		<element-def name="entity-field-migration" extends="entity-type-migration" abstract="true">
+			<attribute name="field" type="identifier" />
+		</element-def>
+		<element-def name="add-field" extends="entity-field-migration">
+			<attribute name="type" type="string" />
+			<attribute name="init-value" type="string" specify="optional" />
+			<child-def name="mapping" type="mapped" min="0" />
+			<child-def name="init-with" type="entity-field-initializer" min="0" />
+		</element-def>
+		<?DOC Basically an alias of <add-field> for use in an <add-entity> migration?>
+		<element-def name="field">
+			<attribute name="entity" type="string" specify="forbidden" />
+			<attribute name="field" type="identifier" />
+			<attribute name="type" type="string" />
+			<attribute name="init-value" type="string" specify="optional" />
+			<child-def name="mapping" type="mapped" min="0" />
+			<child-def name="init-with" type="entity-field-initializer" min="0" />
+		</element-def>
+		<element-def name="mapped">
+			<attribute name="by" type="identifier" />
+			<attribute name="key" type="identifier" specify="optional" />
+			<attribute name="index" type="identifier" specify="optional" />
+			<attribute name="sort-by" type="identifier" specify="optional" />
+			<attribute name="owns-target" type="boolean" default="false" />
+		</element-def>
+		<element-def name="entity-field-initializer" />
+		<element-def name="remove-field" extends="entity-field-migration" />
+		<element-def name="rename-field" extends="entity-field-migration" inherits="rename-migration" />
+		
+		<element-def name="enum-type-migration" extends="schema-migration" abstract="true">
+			<attribute name="enum" type="identifier"/>
+		</element-def>
+		<element-def name="add-enum" extends="enum-type-migration">
+			<child-def name="value" type="value" max="inf" />
+		</element-def>
+		<element-def name="enum">
+			<attribute name="enum" type="identifier" />
+			<child-def name="value" type="value" max="inf" />
+		</element-def>
+		<element-def name="remove-enum" extends="enum-type-migration" />
+		<element-def name="rename-enum" extends="enum-type-migration" inherits="rename-migration" />
+		<element-def name="enum-value-migration" extends="enum-type-migration">
+			<attribute name="value" type="identifier" />
+		</element-def>
+		<element-def name="add-value" extends="enum-value-migration" />
+		<?DOC Just an alias of <add-value> for use in an <add-enum> migration?>
+		<element-def name="value">
+			<attribute name="enum" type="string" specify="forbidden" />
+			<attribute name="value" type="identifier" />
+		</element-def>
+		<element-def name="remove-value" extends="enum-value-migration" />
+		<element-def name="rename-value" extends="enum-value-migration" inherits="rename-migration" />
+		
+		<element-def name="for-each" extends="migration">
+			<attribute name="entity" type="identifier" />
+			<child-def name="actions" type="single-entity-migrator" max="inf" />
+		</element-def>
+		<element-def name="single-entity-migrator" abstract="true" />
+		
+		<element-def name="copy" extends="single-entity-migrator">
+			<attribute name="from" type="identifier-path" />
+			<attribute name="to" type="identifier-path" />
+		</element-def>
+		
+		<element-def name="conditional-migration" extends="migration">
+			<child-def name="precludes" type="precludes" min="0" max="inf" />
+			<child-def name="requires" type="precludes" min="0" max="inf" />
+			<child-def name="component" type="migration" max="inf" />
+		</element-def>
+		<element-def name="precludes" extends="migration-def" />
+		<element-def name="requires" extends="migration-def" />
+	</elements>
+</qonfig-def>

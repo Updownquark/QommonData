@@ -243,7 +243,7 @@ public class CsvEntitySetPersistence implements EntitySetPersistence {
 	}
 
 	private static <F> void populateField(GenericEntity entity, EntityField<F> field, String text, GenericEntitySet entitySet,
-		IntFunction<FilePosition> source) throws IOException, TextParseException {
+		IntFunction<LocatedFilePosition> source) throws IOException, TextParseException {
 		F value = MigrationUtil.parseFieldValue(text, field.getType(), entitySet, source);
 		if (field.getType() instanceof FieldType.CollectionType) {
 			((Collection<Object>) entity.get(field)).addAll((Collection<?>) value);
@@ -255,7 +255,7 @@ public class CsvEntitySetPersistence implements EntitySetPersistence {
 			entity.set(field, value);
 	}
 
-	static class ColumnPositionGetter implements IntFunction<FilePosition> {
+	static class ColumnPositionGetter implements IntFunction<LocatedFilePosition> {
 		private final TabularFileParser theParser;
 		private int theColumn;
 
@@ -269,15 +269,12 @@ public class CsvEntitySetPersistence implements EntitySetPersistence {
 		}
 
 		@Override
-		public FilePosition apply(int p) {
-			FilePosition columnPos = theParser.getColumnPosition(theColumn);
+		public LocatedFilePosition apply(int p) {
+			LocatedFilePosition columnPos = (LocatedFilePosition) theParser.getColumnPosition(theColumn);
 			if (p == 0)
 				return columnPos;
-			else if (columnPos instanceof LocatedFilePosition)
-				return new LocatedFilePosition(((LocatedFilePosition) columnPos).getFileLocation(), //
-					columnPos.getPosition() + p, columnPos.getLineNumber(), columnPos.getCharNumber() + p);
-			else
-				return new FilePosition(columnPos.getPosition() + p, columnPos.getLineNumber(), columnPos.getCharNumber() + p);
+			return new LocatedFilePosition(columnPos.getFileLocation(), //
+				columnPos.getPosition() + p, columnPos.getLineNumber(), columnPos.getCharNumber() + p);
 		}
 	}
 }
