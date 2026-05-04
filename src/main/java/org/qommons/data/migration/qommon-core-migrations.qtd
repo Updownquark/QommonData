@@ -18,6 +18,7 @@
 		<add-on name="rename-migration" abstract="true">
 			<attribute name="rename-to" type="identifier" />
 		</add-on>
+		<add-on name="abstract-move-to" abstract="true" />
 	</add-ons>
 	<elements>
 		<element-def name="schema-history">
@@ -55,13 +56,16 @@
 			<child-def name="field" type="field" max="inf" />
 		</element-def>
 		<element-def name="remove-entity" extends="entity-type-migration">
-			<child-def name="moveTo" type="move-to" min="0" />
+			<child-def name="moveTo" type="abstract-move-to" min="0" />
 		</element-def>
-		<element-def name="move-to">
+		<element-def name="move-to" inherits="abstract-move-to">
 			<attribute name="target" type="identifier" />
-			<child-def name="migrator" type="entity-move-migrator" />
+			<child-def name="mapped-fields" type="map-field" min="0" max="inf" />
 		</element-def>
-		<element-def name="entity-move-migrator" abstract="true" />
+		<element-def name="map-field">
+			<attribute name="from" type="identifier-path" />
+			<attribute name="to" type="identifier-path" />
+		</element-def>
 		<element-def name="rename-entity" extends="entity-type-migration" inherits="rename-migration" />
 		<element-def name="entity-field-migration" extends="entity-type-migration" abstract="true">
 			<attribute name="field" type="identifier" />

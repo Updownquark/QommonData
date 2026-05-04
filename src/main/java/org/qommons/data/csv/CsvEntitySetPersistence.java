@@ -60,7 +60,7 @@ public class CsvEntitySetPersistence implements EntitySetPersistence {
 			if (entity == null)
 				return false; // All our files start with the name of an entity type followed by a '.'
 			else if (file.isFile()) {
-				return file.getName().substring(dot + 1).equalsIgnoreCase(CSV_SUFFIX);
+				return file.getName().substring(dot).equalsIgnoreCase(CSV_SUFFIX);
 			} else {
 				EntityField<?> field = entity.getField(file.getName().substring(dot + 1));
 				return field != null && field.getType() == FieldType.BLOB && field.getOwner() == entity;

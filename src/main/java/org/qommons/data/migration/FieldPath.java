@@ -1,6 +1,7 @@
 package org.qommons.data.migration;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 
 import org.qommons.config.QonfigInterpretationException;
@@ -14,8 +15,8 @@ public class FieldPath<T> {
 	final List<EntityField<GenericEntity>> prePath;
 	final EntityField<T> lastField;
 
-	FieldPath(List<EntityField<GenericEntity>> prePath, EntityField<T> lastField) {
-		this.prePath = prePath;
+	public FieldPath(List<EntityField<GenericEntity>> prePath, EntityField<T> lastField) {
+		this.prePath = prePath == null ? Collections.emptyList() : prePath;
 		this.lastField = lastField;
 	}
 

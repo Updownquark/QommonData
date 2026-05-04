@@ -12,7 +12,6 @@ import java.text.ParseException;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDateTime;
-import java.time.OffsetDateTime;
 import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
@@ -495,25 +494,34 @@ public class VersionedDataScheme {
 				else if (!backup.isDirectory())
 					return null;
 				String name = backup.getName();
-				if (name.length() != VERSION_DIR_PATTERN.length() + 4 || !name.startsWith("BAK_"))
+				if (name.length() != VERSION_DIR_PATTERN.length() + 4 || !name.startsWith("BAK_") || !backup.at(DATA_SCHEMA).isFile())
 					return null;
 				try {
-					return OffsetDateTime.parse(name.substring(4), VERSION_DIR_FORMAT).toInstant();
-				} catch (DateTimeParseException e) {
+					LocalDateTime localTime = LocalDateTime.parse(name.substring(4), VERSION_DIR_FORMAT);
+					return localTime.atOffset(ZoneOffset.UTC).toInstant();
+				} catch (DateTimeParseException e) { // No worries, just a non-data directory
 					return null;
 				}
 			}
 
 			@Override
 			public void preserve(BetterFile backup) {
+				System.out.println("Preserving " + backup.getName());
 				if (backup == persistenceDir)
 					backupCurrentData = true;
 			}
 
 			@Override
 			public void delete(BetterFile backup) throws IOException {
-				if (backup != persistenceDir)
-					backup.delete(null);
+				System.out.println("Deleting " + backup.getName());
+				if (backup != persistenceDir) {
+					try {
+						backup.delete(null);
+					} catch (IOException e) {
+						System.err.println("Could not delete backup file " + backup);
+						e.printStackTrace();
+					}
+				}
 			}
 		}
 	}

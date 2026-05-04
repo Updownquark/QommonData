@@ -1,17 +1,19 @@
 package org.qommons.data.migration;
 
 import java.io.IOException;
-import java.util.Collection;
+import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
 import org.qommons.ArrayUtils;
+import org.qommons.BiTuple;
 import org.qommons.QommonsUtils;
-import org.qommons.collect.MultiMap;
 import org.qommons.config.QonfigInterpretationException;
 import org.qommons.config.QonfigInterpreterCore;
 import org.qommons.config.QonfigInterpreterCore.CoreSession;
@@ -180,9 +182,16 @@ public abstract class SchemaMigration implements Migration {
 
 		public RemoveEntityMigration(QonfigInterpreterCore.CoreSession session) throws QonfigInterpretationException {
 			super(session);
-			QonfigInterpreterCore.CoreSession moveToSession = session.forChildren("moveTo").peekFirst();
-			moveTo = moveToSession == null ? null : moveToSession.interpret(EntityMoveMigrator.class);
 			SchemaHistory history = session.get(SchemaHistory.HISTORY, SchemaHistory.class);
+			ModifiableEntityType entity = history.getTypeSet().getEntityType(entityName.toString());
+			if (entity == null)
+				throw new QonfigInterpretationException("No such entity type '" + entityName + "'", entityName);
+			QonfigInterpreterCore.CoreSession moveToSession = session.forChildren("moveTo").peekFirst();
+			if (moveToSession != null) {
+				moveToSession.put(EntityMoveMigrator.SOURCE_ENTITY, entity);
+				moveTo = moveToSession.interpret(EntityMoveMigrator.class);
+			} else
+				moveTo = null;
 			if (history != null)
 				applySchemaChange(history.getTypeSet());
 		}
@@ -195,26 +204,23 @@ public abstract class SchemaMigration implements Migration {
 
 			if (moveTo != null) {
 				boolean canMoveReferences;
-				if (moveTo != null) {
-					EntityType moveToType = types.getEntityType(moveTo.getTargetEntity()); // Assume the move-to validated itself
+				EntityType moveToType = types.getEntityType(moveTo.getTargetEntity()); // Assume the move-to validated itself
 
-					// Ensure that any references to the given entity type can be converted to the move-to type
-					canMoveReferences = entity.getRootType() == moveToType.getRootType();
-					if (canMoveReferences) {
-						// In every entity that references the deleted type (and whose type allows it,
-						// replace each instance with the replacement instance
-						for (ModifiableEntityType referrer : entity.getReferrers()) {
-							if (referrer != entity) {
-								for (ModifiableEntityField<GenericEntity> reference : entity.getReferences(referrer)) {
-									if (!((ModifiableEntityType) reference.getType()).isAssignableFrom(moveToType))
-										throw new QonfigInterpretationException(
-											"Field " + reference + " cannot be migrated to " + moveToType, getPosition());
-								}
+				// Ensure that any references to the given entity type can be converted to the move-to type
+				canMoveReferences = entity.getRootType() == moveToType.getRootType();
+				if (canMoveReferences) {
+					// In every entity that references the deleted type (and whose type allows it,
+					// replace each instance with the replacement instance
+					for (ModifiableEntityType referrer : entity.getReferrers()) {
+						if (referrer != entity) {
+							for (ModifiableEntityField<GenericEntity> reference : entity.getReferences(referrer)) {
+								if (!((ModifiableEntityType) reference.getType()).isAssignableFrom(moveToType))
+									throw new QonfigInterpretationException("Field " + reference + " cannot be migrated to " + moveToType,
+										getPosition());
 							}
 						}
 					}
-				} else
-					canMoveReferences = false;
+				}
 				if (canMoveReferences) { // Already taken care of
 				} else if (entity.getReferrers().isEmpty()) { // No references
 				} else if (entity.getReferrers().size() == 1 && entity.getReferrers().contains(entity)) {
@@ -245,36 +251,11 @@ public abstract class SchemaMigration implements Migration {
 				EntityType moveToType = dataSet.getTypes().getEntityType(target);
 				if (moveToType == null)
 					throw new DataSetModificationException("Target entity type not found: " + target);
+				moveTo.prepare(entityType, moveToType);
 				Map<GenericEntity, GenericEntity> replacements = new IdentityHashMap<>();
 				for (GenericEntity toDelete : dataSet.getEntities(entityName.toString())) {
-					GenericEntity replacement;
-					Object[] id = toDelete.getId();
-					if (dataSet.getEntity(moveToType.getRootType().getName(), id) == null)
-						replacement = dataSet.createEntity(target, id);
-					else if (id.length == 1)
-						replacement = dataSet.createEntity(target);
-					else
-						replacement = dataSet.createEntity(target, ArrayUtils.remove(id, id.length - 1));
-					// Initialize identical fields
-					for (EntityField<?> field : entityType.getFields()) {
-						if (!field.isId()) {
-							EntityField<?> replacementField = moveToType.getField(field.getName());
-							if (replacementField != null && !replacementField.isId()
-								&& replacementField.getType().isAssignableFrom(field.getType())) {
-								Object oldValue = toDelete.get(field);
-								if (field.getType() instanceof FieldType.CollectionType) {
-									((Collection<Object>) replacement.get(replacementField)).addAll((Collection<?>) oldValue);
-								} else if (field.getType() instanceof FieldType.MapType) {
-									((Map<Object, Object>) replacement.get(replacementField)).putAll((Map<?, ?>) oldValue);
-								} else if (field.getType() instanceof FieldType.MultiMapType) {
-									((MultiMap<Object, Object>) replacement.get(replacementField)).putAll((MultiMap<?, ?>) oldValue);
-								} else
-									replacement.set(replacementField,
-										oldValue == null ? null : replacementField.getType().convert(oldValue, field.getType()));
-							}
-						}
-						moveTo.copyData(toDelete, replacement);
-					}
+					GenericEntity replacement = moveTo.getOrCreateReplacement(toDelete, moveToType);
+					moveTo.copyData(toDelete, replacement);
 					replacements.put(toDelete, replacement);
 				}
 
@@ -292,17 +273,148 @@ public abstract class SchemaMigration implements Migration {
 						}
 					}
 				}
-				if (entityType.getRootType() == moveToType.getRootType()) {
-					for (ModifiableEntityType referrer : entityType.getReferrers()) {
-						if (referrer != entityType)
-							for (ModifiableEntityField<GenericEntity> reference : entityType.getReferences(referrer)) {
-							}
-					}
-				}
 
 				entityType.delete(getPosition());
 				dataSet.entityTypeRemoved(entityType);
 			}
+		}
+	}
+
+	public static class DefaultMoveTo implements EntityMoveMigrator {
+		private final LocatedPositionedContent theTargetEntity;
+		private final List<MapField> theMappedFields;
+		private final MapField[] theMappedIds;
+
+		public DefaultMoveTo(QonfigInterpreterCore.CoreSession session) throws QonfigInterpretationException {
+			theTargetEntity = session.attributes().get("target").getLocatedContent();
+			EntityType targetType = SchemaHistory.get(session).getTypeSet().getEntityType(theTargetEntity.toString());
+			if (targetType == null)
+				throw new QonfigInterpretationException("No such entity type '" + theTargetEntity + "'", theTargetEntity);
+			session.put(SingleEntityCustomMigrator.AFFECTED_ENTITY, targetType);
+			theMappedFields = new ArrayList<>();
+			MapField[] ids = new MapField[targetType.getIdFields().size()];
+			EntityType sourceType = (EntityType) session.get(EntityMoveMigrator.SOURCE_ENTITY);
+			Set<String> sourceFieldNames = new HashSet<>();
+			Set<String> targetFieldNames = new HashSet<>();
+			for (QonfigInterpreterCore.CoreSession mappedField : session.forChildren("mapped-fields")) {
+				MapField field = mappedField.interpret(MapField.class);
+				if (!field.from.hasPath())
+					sourceFieldNames.add(field.from.getTargetFieldName());
+				if (!field.to.hasPath()) {
+					targetFieldNames.add(field.to.getTargetFieldName());
+					int idIndex = targetType.getIdFields().indexOf(targetType.getField(field.to.getTargetFieldName()));
+					if (idIndex >= 0)
+						ids[idIndex] = field;
+				} else
+					theMappedFields.add(field);
+			}
+			for (EntityField<?> sourceField : sourceType.getFields()) {
+				if (sourceFieldNames.contains(sourceField.getName()))
+					continue;
+				EntityField<?> targetField;
+				if (sourceField.getOwner().isAssignableFrom(targetType))
+					targetField = sourceField;
+				else {
+					targetField = targetType.getField(sourceField.getName());
+					if (targetField == null) {
+						session.reporting().warn("No mapping available for field " + sourceField);
+						continue;
+					}
+				}
+				if (!targetFieldNames.add(targetField.getName()))
+					continue;
+				try {
+					MapField field = new MapField(new FieldGetter.Simple<>(new FieldPath<>(null, (EntityField<Object>) sourceField)),
+						FieldSetter.parse(targetType, (FieldType<Object>) sourceField.getType(), sourceField.getName(),
+							LocatedPositionedContent.of(null, sourceField.getName())));
+					if (targetField.isId())
+						ids[targetType.getIdFields().indexOf(targetField)] = field;
+					else
+						theMappedFields.add(field);
+				} catch (QonfigInterpretationException e) {
+					// This is not fatal, it just means this source field can't be mapped and the information will be lost
+					session.reporting().warn("No mapping available for field " + sourceField, e);
+				}
+			}
+			for (int i = 0; i < ids.length; i++) {
+				if (ids[i] == null) {
+					if (i == ids.length - 1 // It may be ok for the last ID field to be null--the entity set can auto-populate it
+						&& MigrationUtil.isIncrementable(targetType.getIdFields().get(i).getType())) {
+						ids = ArrayUtils.remove(ids, i);
+					} else
+						throw new QonfigInterpretationException(
+							"No mapping available for required ID field " + targetType.getIdFields().get(i),
+							session.getElement().getFilePosition());
+				}
+			}
+			theMappedIds = ids;
+		}
+
+		@Override
+		public String getTargetEntity() {
+			return theTargetEntity.toString();
+		}
+
+		@Override
+		public void prepare(EntityType sourceType, EntityType targetType) throws QonfigInterpretationException {
+			for (MapField field : theMappedIds) {
+				field.from.prepare(sourceType);
+				field.to.prepare(targetType);
+			}
+			for (MapField field : theMappedFields) {
+				field.from.prepare(sourceType);
+				field.to.prepare(targetType);
+			}
+		}
+
+		@Override
+		public GenericEntity getOrCreateReplacement(GenericEntity sourceEntity, EntityType targetType)
+			throws QonfigInterpretationException {
+			Object[] id = new Object[theMappedIds.length];
+			for (int i = 0; i < id.length; i++)
+				id[i] = theMappedIds[i].from.apply(sourceEntity);
+			if (theMappedIds.length == targetType.getIdFields().size()) {
+				GenericEntity found;
+				try {
+					found = sourceEntity.getEntitySet().getEntity(targetType.getName(), id);
+				} catch (IOException e) {
+					throw new QonfigInterpretationException("Could not read " + targetType + " entities", theTargetEntity, e);
+				}
+				if (found == null)
+					found = sourceEntity.getEntitySet().createEntity(targetType.getName(), id);
+				return found;
+			} else
+				return sourceEntity.getEntitySet().createEntity(targetType.getName(), id);
+		}
+
+		@Override
+		public void copyData(GenericEntity oldEntity, GenericEntity newEntity) {
+			for (MapField field : theMappedFields) {
+				Object value = field.from.apply(oldEntity);
+				field.to.accept(newEntity, value);
+			}
+		}
+	}
+
+	public static class MapField {
+		public final FieldGetter<Object> from;
+		public final FieldSetter<Object, Object> to;
+
+		public MapField(QonfigInterpreterCore.CoreSession session) throws QonfigInterpretationException {
+			EntityType sourceType = (EntityType) session.get(EntityMoveMigrator.SOURCE_ENTITY);
+			EntityType targetType = (EntityType) session.get(EntityMoveMigrator.TARGET_ENTITY);
+			if (targetType == null)
+				throw new QonfigInterpretationException("Expected '" + SingleEntityCustomMigrator.AFFECTED_ENTITY + "' session property",
+					session.getElement().getFilePosition());
+			LocatedPositionedContent fromText = session.attributes().get("from").getLocatedContent();
+			BiTuple<FieldType<Object>, FieldGetter<Object>> fromField = FieldGetter.parse(sourceType, fromText);
+			from = fromField.getValue2();
+			to = FieldSetter.parse(targetType, fromField.getValue1(), fromText, session.attributes().get("to").getLocatedContent());
+		}
+
+		public MapField(FieldGetter<Object> from, FieldSetter<Object, Object> to) {
+			this.from = from;
+			this.to = to;
 		}
 	}
 

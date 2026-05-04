@@ -10,7 +10,7 @@ import org.qommons.data.values.GenericEntity;
 import org.qommons.io.LocatedPositionedContent;
 
 public interface FieldGetter<T> extends Function<GenericEntity, T>, FieldResolving<T> {
-	class Simple<T> extends FieldResolving.Abstract<T> implements FieldGetter<T> {
+	public class Simple<T> extends FieldResolving.Abstract<T> implements FieldGetter<T> {
 		Simple(FieldPath<T> path) {
 			super(path);
 		}

@@ -1,19 +1,25 @@
 package org.qommons.data.migration;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 
+import org.qommons.StringUtils;
 import org.qommons.config.QonfigInterpretationException;
 import org.qommons.data.types.EntityField;
 import org.qommons.data.types.EntityType;
 import org.qommons.data.values.GenericEntity;
 
 public interface FieldResolving<T> {
+	boolean hasPath();
+
+	String getTargetFieldName();
+
 	void prepare(EntityType entity) throws QonfigInterpretationException;
 
 	EntityField<T> getTargetField();
 
-	class Abstract<T> implements FieldResolving<T> {
+	public class Abstract<T> implements FieldResolving<T> {
 		private final String[] thePrePath;
 		private final String theLastFieldName;
 		final List<EntityField<GenericEntity>> theResolvedPath;
@@ -23,6 +29,16 @@ public interface FieldResolving<T> {
 			this.thePrePath = path.getPrePath();
 			this.theLastFieldName = path.lastField.getName();
 			theResolvedPath = new ArrayList<>(thePrePath.length);
+		}
+
+		@Override
+		public boolean hasPath() {
+			return thePrePath.length > 0;
+		}
+
+		@Override
+		public String getTargetFieldName() {
+			return theLastFieldName;
 		}
 
 		@Override
@@ -54,6 +70,16 @@ public interface FieldResolving<T> {
 					return null;
 			}
 			return e;
+		}
+
+		@Override
+		public String toString() {
+			if (thePrePath.length == 0)
+				return theLastFieldName;
+			StringBuilder str = new StringBuilder();
+			StringUtils.print(str, ".", Arrays.asList(thePrePath), StringBuilder::append);
+			str.append('.').append(theLastFieldName);
+			return str.toString();
 		}
 	}
 }

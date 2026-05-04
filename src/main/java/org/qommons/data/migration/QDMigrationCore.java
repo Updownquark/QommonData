@@ -24,6 +24,8 @@ import org.qommons.data.migration.SchemaMigration.AddEnumMigration;
 import org.qommons.data.migration.SchemaMigration.AddFieldMigration;
 import org.qommons.data.migration.SchemaMigration.AddValueMigration;
 import org.qommons.data.migration.SchemaMigration.ConfiguredFieldMapping;
+import org.qommons.data.migration.SchemaMigration.DefaultMoveTo;
+import org.qommons.data.migration.SchemaMigration.MapField;
 import org.qommons.data.migration.SchemaMigration.RemoveEntityMigration;
 import org.qommons.data.migration.SchemaMigration.RemoveEnumMigration;
 import org.qommons.data.migration.SchemaMigration.RemoveFieldMigration;
@@ -87,6 +89,8 @@ public class QDMigrationCore implements QonfigInterpretation {
 		interpreter.createWith("add-entity", AddEntityMigration.class, AddEntityMigration::new);
 		interpreter.createWith("entity", AddEntityMigration.class, AddEntityMigration::new);
 		interpreter.createWith("remove-entity", RemoveEntityMigration.class, RemoveEntityMigration::new);
+		interpreter.createWith("move-to", DefaultMoveTo.class, DefaultMoveTo::new);
+		interpreter.createWith("map-field", MapField.class, MapField::new);
 		interpreter.createWith("rename-entity", RenameEntityMigration.class, RenameEntityMigration::new);
 		interpreter.createWith("add-field", AddFieldMigration.class, AddFieldMigration::new);
 		interpreter.createWith("field", AddFieldMigration.class, AddFieldMigration::new);
