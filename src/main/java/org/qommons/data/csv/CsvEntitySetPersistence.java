@@ -41,6 +41,15 @@ import org.qommons.io.LocatedFilePosition;
 import org.qommons.io.TabularFileParser;
 import org.qommons.io.TextParseException;
 
+/**
+ * <p>
+ * {@link EntitySetPersistence} implementation that writes entity data to CSV files.
+ * </p>
+ * <p>
+ * All entities for each entity type are written to a single file for the whole type. {@link org.qommons.data.types.Blob}-type fields are
+ * persisted individually.
+ * </p>
+ */
 public class CsvEntitySetPersistence implements EntitySetPersistence {
 	private static final String CSV_SUFFIX = ".csv";
 
@@ -384,10 +393,7 @@ public class CsvEntitySetPersistence implements EntitySetPersistence {
 				populateField(entity, field, line[i], entitySet, sourcePos.setColumn(column));
 			}
 			if (!blobFields.isEmpty()) {
-				String id = MigrationUtil.printEntityId(null, entity).toString();
 				for (EntityField<Blob> field : blobFields) {
-					BetterFile blobFile = persistenceDir.at(field.getOwner().getName() + "." + field.getName())
-						.at(idToFileName(id) + ".blob");
 					entity.set(field, createBlob(entity, persistenceDir, field));
 				}
 			}
