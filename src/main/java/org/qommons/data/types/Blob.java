@@ -24,6 +24,8 @@ import org.qommons.io.UnfailingOutputStream;
 public interface Blob {
 	long length();
 
+	long getLastModified();
+
 	InputStream read() throws IOException;
 
 	InputStream read(int offset) throws IOException;
@@ -77,6 +79,7 @@ public interface Blob {
 	public static class InMemoryBlob implements Blob {
 		private final CircularByteBuffer theBuffer;
 		private final ListenerList<ExRunnable<IOException>> theListeners;
+		private long theLastModified;
 
 		public InMemoryBlob() {
 			theBuffer = new CircularByteBuffer(-1);
@@ -86,6 +89,11 @@ public interface Blob {
 		@Override
 		public long length() {
 			return theBuffer.length();
+		}
+
+		@Override
+		public long getLastModified() {
+			return theLastModified;
 		}
 
 		@Override
@@ -100,6 +108,7 @@ public interface Blob {
 
 		@Override
 		public UnfailingOutputStream write() {
+			theLastModified = System.currentTimeMillis();
 			theBuffer.clear(false);
 			return new UnfailingListenableOutputStream(theBuffer.asOutputStream(), this::fireChanged);
 		}

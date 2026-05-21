@@ -154,6 +154,10 @@ public class EntityTypeSetMapping {
 
 		@Override
 		public int compareTo(MappedFieldDiff o) {
+			if (genericField == null)
+				return -1;
+			else if (o.genericField == null)
+				return 1;
 			return StringUtils.compareNumberTolerant(genericField.getName(), o.genericField.getName(), true, true);
 		}
 
@@ -276,7 +280,7 @@ public class EntityTypeSetMapping {
 				EntityTypeMapping<?> mapped = theMappedEntities.get(entity.getName());
 				if (mapped == null)
 					theEntityDiffs.put(entity.getName(), new MappedEntityDiff(entity, null, null, Collections.emptyNavigableSet()));
-				else
+				else if (!theEntityDiffs.containsKey(entity.getName()))
 					mapped.init();
 			}
 		}

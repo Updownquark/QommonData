@@ -9,7 +9,6 @@ import java.util.Set;
 import java.util.function.Function;
 
 import org.qommons.IterableUtils;
-import org.qommons.Lockable.CoreId;
 import org.qommons.StringUtils;
 import org.qommons.ThreadConstraint;
 import org.qommons.Transaction;
@@ -80,13 +79,13 @@ public class InMemoryEntitySet implements GenericEntitySet {
 	}
 
 	@Override
-	public Transaction lock(boolean write, Object cause) {
-		return theLock.lock(write, cause);
+	public Transaction lock(boolean tryOnly) {
+		return theLock.lock(tryOnly);
 	}
 
 	@Override
-	public Transaction tryLock(boolean write, Object cause) {
-		return theLock.tryLock(write, cause);
+	public Transaction lockWrite(boolean tryOnly, Object cause) {
+		return theLock.lockWrite(tryOnly, cause);
 	}
 
 	@Override

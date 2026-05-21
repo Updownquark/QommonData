@@ -33,7 +33,7 @@ public interface GenericEntitySet extends Transactable {
 	GenericEntity createEntity(String typeName, Object... ids);
 
 	static void copy(GenericEntitySet source, GenericEntitySet dest) throws IOException {
-		try (Transaction t = dest.lock(true, null)) {
+		try (Transaction t = dest.lockWrite(false, null)) {
 			Copying.copy(source, dest);
 		}
 	}

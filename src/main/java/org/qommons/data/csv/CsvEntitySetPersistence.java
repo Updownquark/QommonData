@@ -195,11 +195,13 @@ public class CsvEntitySetPersistence implements EntitySetPersistence {
 
 	private static Blob copyBlob(Blob blob, GenericEntity entity, BetterFile destDataDir, EntityField<Blob> field) {
 		Blob myBlob = createBlob(entity, destDataDir, field);
-		try {
-			FileUtils.copy(blob::read, myBlob::write);
-		} catch (IOException e) {
-			System.err.println("Failed to copy blob data");
-			e.printStackTrace();
+		if (blob != null) {
+			try {
+				FileUtils.copy(blob::read, myBlob::write);
+			} catch (IOException e) {
+				System.err.println("Failed to copy blob data");
+				e.printStackTrace();
+			}
 		}
 		return myBlob;
 	}
@@ -452,6 +454,11 @@ public class CsvEntitySetPersistence implements EntitySetPersistence {
 		@Override
 		public long length() {
 			return Math.max(0, theFile.length());
+		}
+
+		@Override
+		public long getLastModified() {
+			return theFile.getLastModified();
 		}
 
 		@Override

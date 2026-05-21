@@ -181,7 +181,7 @@ public abstract class AbstractGenericEntity implements GenericEntity {
 
 	@Override
 	public String canDelete() {
-		try (Transaction t = getEntitySet().lock(false, null)) {
+		try (Transaction t = getEntitySet().lock(false)) {
 			if (isDeleted)
 				return null;
 			// Check for references to this entity in the data set
@@ -226,7 +226,7 @@ public abstract class AbstractGenericEntity implements GenericEntity {
 
 	@Override
 	public void delete() {
-		try (Transaction t = getEntitySet().lock(true, null)) {
+		try (Transaction t = getEntitySet().lockWrite(false, null)) {
 			if (isDeleted)
 				return;
 			isDeleted = true;

@@ -648,6 +648,11 @@ public class VersionedDataScheme {
 				if (!newDataDir.isDirectory())
 					newDataDir.create(true);
 				currentData = new PersistedEntitySet(newDataDir, dataSet);
+				try {
+					persistFullData(dataSet, migrations, newDataDir, persistence);
+				} catch (TextParseException e) {
+					e.printStackTrace();
+				}
 			}
 		}
 		return currentData;

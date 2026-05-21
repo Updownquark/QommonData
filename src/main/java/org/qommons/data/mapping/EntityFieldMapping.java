@@ -194,7 +194,7 @@ public class EntityFieldMapping<G, R> implements Named {
 	}
 
 	public static Comparator<?> sortRealValues(FieldType<?> type, EntityTypeSetMapping types) {
-		if (type instanceof FieldType.SimpleType)
+		if (type instanceof FieldType.SimpleType || type == FieldType.BLOB)
 			return type;
 		else if (type instanceof EntityType)
 			return types.getEntityTypes().get(((EntityType) type).getName()).getSorting();
