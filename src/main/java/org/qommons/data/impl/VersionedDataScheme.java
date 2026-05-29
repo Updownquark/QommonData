@@ -71,6 +71,7 @@ import org.qommons.tree.BetterTreeSet;
 
 public class VersionedDataScheme {
 	public static final String VERSION_DIR_PATTERN = "yyyyMMdd_HHmmss";
+	public static final Pattern VERSION_DIR_DETECT_PATTERN = Pattern.compile("BAK_(<?day>\\d{8})_(<?time>\\d{6})");
 	public static final DateTimeFormatter VERSION_DIR_FORMAT = DateTimeFormatter.ofPattern(VERSION_DIR_PATTERN)//
 		.withZone(ZoneId.of("GMT"));
 	private static final Duration ONE_SECOND = Duration.ofSeconds(1);
@@ -159,6 +160,7 @@ public class VersionedDataScheme {
 			this.entityTypes = types;
 			this.persistenceDir = persistenceDir;
 			thePersistence = persistence;
+			persistence.setPersistentDataDir(persistenceDir);
 			if (optimizeWrites) {
 				theTypeFileHashes = new HashMap<>();
 				for (EntityType type : types.getEntityTypes()) {
@@ -205,14 +207,14 @@ public class VersionedDataScheme {
 		private <X extends Exception> void forAllDataSetFiles(DataSetFileAction<X> forEach) throws X {
 			StringBuilder path = new StringBuilder();
 			for (BetterFile file : persistenceDir.listFiles())
-				forAllDataSetFiles(file, path, forEach, true);
+				forAllDataSetFiles(file, path, forEach, 0);
 		}
 
 		private <X extends Exception> void forAllDataSetFiles(BetterFile file, StringBuilder path, DataSetFileAction<X> forEach,
-			boolean root) throws X {
+			int depth) throws X {
 			int preLen = path.length();
 			if (file.isFile()) {
-				if (root && (file.getName().equals(MIGRATION_STORE) || file.getName().equals(DATA_SCHEMA))) {
+				if (depth == 0 && (file.getName().equals(MIGRATION_STORE) || file.getName().equals(DATA_SCHEMA))) {
 					path.append(file.getName());
 					forEach.forDataSetFile(file, path);
 				} else {
@@ -225,12 +227,16 @@ public class VersionedDataScheme {
 						// Just keep going
 					}
 				}
-			} else {
+			} else if (depth > 0 || !isBackupDirName(file.getName())) {
 				path.append(file.getName()).append('/');
 				for (BetterFile sub : file.listFiles())
-					forAllDataSetFiles(sub, path, forEach, false);
+					forAllDataSetFiles(sub, path, forEach, depth + 1);
 			}
 			path.setLength(preLen);
+		}
+
+		private boolean isBackupDirName(String dirName) {
+			return VERSION_DIR_DETECT_PATTERN.matcher(dirName).matches();
 		}
 
 		public RollingEntitySetPersistence saveSchema(Collection<? extends MigrationSetDef> migrations) throws IOException {
@@ -417,7 +423,11 @@ public class VersionedDataScheme {
 
 		private void backUpTo(BetterFile targetDir) throws IOException {
 			forAllDataSetFiles((file, path) -> {
-				FileUtils.sync().from(file).to(targetDir.at(path.toString())).sync();
+				BetterFile targetFile = targetDir.at(path.toString());
+				BetterFile parent = targetFile.getParent();
+				if (!parent.isDirectory())
+					parent.create(true);
+				FileUtils.sync().from(file).to(targetFile).sync();
 			});
 		}
 
@@ -506,14 +516,12 @@ public class VersionedDataScheme {
 
 			@Override
 			public void preserve(BetterFile backup) {
-				System.out.println("Preserving " + backup.getName());
 				if (backup == persistenceDir)
 					backupCurrentData = true;
 			}
 
 			@Override
 			public void delete(BetterFile backup) throws IOException {
-				System.out.println("Deleting " + backup.getName());
 				if (backup != persistenceDir) {
 					try {
 						backup.delete(null);
@@ -684,7 +692,6 @@ public class VersionedDataScheme {
 		public final GenericEntitySet entityData;
 		public final MigrationUtil.MigrationDiff migrationResults;
 		public MigratedDataSet(GenericEntitySet entityData, MigrationDiff migrationResults) {
-			super();
 			this.entityData = entityData;
 			this.migrationResults = migrationResults;
 		}

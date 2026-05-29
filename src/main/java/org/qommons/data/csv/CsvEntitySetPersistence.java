@@ -57,6 +57,13 @@ public class CsvEntitySetPersistence implements EntitySetPersistence {
 		Loading, IdLoaded, Loaded;
 	}
 
+	private BetterFile thePersistenceDir;
+
+	@Override
+	public void setPersistentDataDir(BetterFile persistenceDir) {
+		thePersistenceDir=persistenceDir;
+	}
+
 	@Override
 	public boolean mayBePersistedData(BetterFile file, BetterFile persistenceDir, EntityTypeSet typeSet)
 		throws IOException, TextParseException {
@@ -151,9 +158,10 @@ public class CsvEntitySetPersistence implements EntitySetPersistence {
 			}
 		}
 		if (blobFields != null) {
+			BetterFile blobPersistenceDir = thePersistenceDir == null ? destDataDir : thePersistenceDir;
 			Map<EntityField<?>, Map<String, BetterFile>> blobFiles = new HashMap<>();
 			for (EntityField<Blob> field : blobFields) {
-				BetterFile blobDir = destDataDir.at(field.getOwner().getName() + "." + field.getName());
+				BetterFile blobDir = blobPersistenceDir.at(field.getOwner().getName() + "." + field.getName());
 				Map<String, BetterFile> fieldFiles = new HashMap<>();
 				blobFiles.put(field, fieldFiles);
 				if (blobDir.isDirectory()) {
@@ -164,10 +172,10 @@ public class CsvEntitySetPersistence implements EntitySetPersistence {
 			for (GenericEntity entity : entities) {
 				for (EntityField<Blob> field : blobFields) {
 					Blob blob = entity.get(field);
-					if (isMine(blob, entity, destDataDir, field))
+					if (isMine(blob, entity, blobPersistenceDir, field))
 						blobFiles.get(field).remove(idToFileName(MigrationUtil.printEntityId(null, entity).toString()) + ".blob");
 					else
-						entity.set(field, copyBlob(blob, entity, destDataDir, field));
+						entity.set(field, copyBlob(blob, entity, blobPersistenceDir, field));
 				}
 			}
 			for (Map<String, BetterFile> fieldFiles : blobFiles.values()) {
@@ -272,7 +280,7 @@ public class CsvEntitySetPersistence implements EntitySetPersistence {
 		}
 	}
 
-	private static boolean loadEntities(EntityType entityType, BetterFile directory, String suffix, GenericEntitySet entitySet,
+	private boolean loadEntities(EntityType entityType, BetterFile directory, String suffix, GenericEntitySet entitySet,
 		Map<EntityType, EntityTypeLoadStatus> loadedTypes, boolean firstRound) throws IOException, TextParseException {
 		EntityTypeLoadStatus status = loadedTypes.get(entityType);
 		if (status != null) {
@@ -305,7 +313,8 @@ public class CsvEntitySetPersistence implements EntitySetPersistence {
 						return false;
 					} else
 						unresolvedReferences = true;
-				}
+				} else if (field.getType() == FieldType.BLOB)
+					unresolvedReferences = true;
 			}
 			loadedTypes.put(entityType, unresolvedReferences ? EntityTypeLoadStatus.IdLoaded : EntityTypeLoadStatus.Loaded);
 		} else {
@@ -370,7 +379,7 @@ public class CsvEntitySetPersistence implements EntitySetPersistence {
 		return true;
 	}
 
-	private static void parseValues(TabularFileParser parser, EntityType entityType, GenericEntitySet entitySet, int[] idIndexes,
+	private void parseValues(TabularFileParser parser, EntityType entityType, GenericEntitySet entitySet, int[] idIndexes,
 		EntityField<?>[] fieldOrder, String[] line, boolean firstRound, BetterFile persistenceDir, List<EntityField<Blob>> blobFields)
 			throws IOException, TextParseException {
 		Object[] idValues = new Object[idIndexes.length];
@@ -395,8 +404,9 @@ public class CsvEntitySetPersistence implements EntitySetPersistence {
 				populateField(entity, field, line[i], entitySet, sourcePos.setColumn(column));
 			}
 			if (!blobFields.isEmpty()) {
+				BetterFile blobPersistenceDir = thePersistenceDir == null ? persistenceDir : thePersistenceDir;
 				for (EntityField<Blob> field : blobFields) {
-					entity.set(field, createBlob(entity, persistenceDir, field));
+					entity.set(field, createBlob(entity, blobPersistenceDir, field));
 				}
 			}
 		}
@@ -449,6 +459,14 @@ public class CsvEntitySetPersistence implements EntitySetPersistence {
 
 		BetterFile getFile() {
 			return theFile;
+		}
+
+		@Override
+		public boolean isEmpty() {
+			if (theFile.isFile()) {
+				return theFile.length() > 0;
+			} else
+				return false;
 		}
 
 		@Override

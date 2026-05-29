@@ -34,7 +34,7 @@
 			<child-def name="migrations" type="migration" max="inf" />
 		</element-def>
 		<element-def name="entity-schema">
-			<child-def name="enums" type="enum" max="inf" />
+			<child-def name="enums" type="enum" min="0" max="inf" />
 			<child-def name="entities" type="entity" max="inf" />
 		</element-def>
 		

@@ -961,10 +961,19 @@ public class MigrationUtil {
 			if (!type.parsed)
 				createEntityType(type, typeSet, entityTypes, path);
 		}
+		// Now add non-mapped fields (mapped fields refer to other fields, which may not themselves have been added yet)
 		for (ModifiableEntityType type : typeSet.getEntityTypes()) {
 			ParsingEntityType add = entityTypes.get(type.getName());
 			for (SchemaMigration.AddFieldMigration field : add.add.fields.values()) {
-				if (!add.add.idFieldNames.contains(field.fieldName))
+				if (!add.add.idFieldNames.contains(field.fieldName) && field.mapping == null)
+					field.applySchemaChange(typeSet);
+			}
+		}
+		// Now add mapped fields
+		for (ModifiableEntityType type : typeSet.getEntityTypes()) {
+			ParsingEntityType add = entityTypes.get(type.getName());
+			for (SchemaMigration.AddFieldMigration field : add.add.fields.values()) {
+				if (!add.add.idFieldNames.contains(field.fieldName) && field.mapping != null)
 					field.applySchemaChange(typeSet);
 			}
 		}

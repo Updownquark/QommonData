@@ -9,6 +9,8 @@ import org.qommons.io.BetterFile;
 import org.qommons.io.TextParseException;
 
 public interface EntitySetPersistence {
+	void setPersistentDataDir(BetterFile persistenceDir);
+
 	boolean mayBePersistedData(BetterFile file, BetterFile persistenceDir, EntityTypeSet typeSet) throws IOException, TextParseException;
 
 	void populate(GenericEntitySet entitySet, BetterFile directory) throws IOException, TextParseException;

@@ -22,6 +22,8 @@ import org.qommons.io.UnfailingInputStream;
 import org.qommons.io.UnfailingOutputStream;
 
 public interface Blob {
+	boolean isEmpty();
+
 	long length();
 
 	long getLastModified();
@@ -84,6 +86,11 @@ public interface Blob {
 		public InMemoryBlob() {
 			theBuffer = new CircularByteBuffer(-1);
 			theListeners = ListenerList.build().build();
+		}
+
+		@Override
+		public boolean isEmpty() {
+			return theBuffer.length() == 0;
 		}
 
 		@Override
