@@ -629,7 +629,6 @@ public class VersionedDataScheme {
 				if (migrations.search(migSet -> dirTime.compareTo(migSet.date), SortedSearchFilter.OnlyMatch) != null)
 					versionDirs.put(dirTime, dir);
 			} catch (DateTimeParseException e) { // No worries, just a non-data directory
-				e.printStackTrace(); // TODO DELETE ME
 			}
 		}
 		String targetDirName = VERSION_DIR_FORMAT.format(migrations.getLast().date);

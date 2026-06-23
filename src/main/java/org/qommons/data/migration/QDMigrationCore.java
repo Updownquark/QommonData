@@ -1,5 +1,7 @@
 package org.qommons.data.migration;
 
+import java.lang.reflect.Constructor;
+import java.lang.reflect.InvocationTargetException;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
@@ -42,8 +44,7 @@ public class QDMigrationCore implements QonfigInterpretation {
 	public static String DATE_FORMAT_PATTERN = "ddMMMyyyy HH:mm:ss";
 	public static final DateTimeFormatter TZ_DATE_FORMAT = DateTimeFormatter.ofPattern(DATE_FORMAT_PATTERN + " zzz")
 		.withZone(ZoneId.of("GMT"));
-	public static final DateTimeFormatter NO_TZ_DATE_FORMAT = DateTimeFormatter.ofPattern(DATE_FORMAT_PATTERN)
-		.withZone(ZoneId.of("GMT"));
+	public static final DateTimeFormatter NO_TZ_DATE_FORMAT = DateTimeFormatter.ofPattern(DATE_FORMAT_PATTERN).withZone(ZoneId.of("GMT"));
 	public static final QonfigToolkitAccess CORE_MIGRATIONS = new QonfigToolkitAccess(QDMigrationCore.class, "qommon-core-migrations.qtd");
 
 	@Override
@@ -106,6 +107,42 @@ public class QDMigrationCore implements QonfigInterpretation {
 		interpreter.createWith("remove-value", RemoveValueMigration.class, RemoveValueMigration::new);
 		interpreter.createWith("rename-value", RenameFieldMigration.class, RenameFieldMigration::new);
 		interpreter.createWith("for-each", ForEachMigration.class, ForEachMigration::new);
+		interpreter.createWith("custom-single", SingleEntityCustomMigrator.class, session -> {
+			String className = session.getValueText();
+			ClassLoader loader = Thread.currentThread().getContextClassLoader();
+			ClassLoader systemCL = ClassLoader.getSystemClassLoader();
+			Class<?> clazz;
+			try {
+				clazz = loader.loadClass(className);
+			} catch (ClassNotFoundException e) {
+				if (systemCL != loader) {
+					try {
+						clazz = systemCL.loadClass(className);
+					} catch (ClassNotFoundException e2) {
+						throw new QonfigInterpretationException("No such class found: " + className, session.getValue().getLocatedContent(),
+							e);
+					}
+				} else
+					throw new QonfigInterpretationException("No such class found: " + className, session.getValue().getLocatedContent(), e);
+			}
+			if (!SingleEntityCustomMigrator.class.isAssignableFrom(clazz))
+				throw new QonfigInterpretationException("Class " + className + " is not a " + SingleEntityCustomMigrator.class.getName(),
+					session.getValue().getLocatedContent());
+
+			Constructor<?> constructor;
+			try {
+				constructor = clazz.getConstructor();
+			} catch (NoSuchMethodException e) {
+				throw new QonfigInterpretationException("Class " + className + " has no default constructor",
+					session.getValue().getLocatedContent(), e);
+			}
+			try {
+				return (SingleEntityCustomMigrator) constructor.newInstance();
+			} catch (InstantiationException | IllegalAccessException | IllegalArgumentException | InvocationTargetException e) {
+				throw new QonfigInterpretationException("Class " + className + " could not be instantiated",
+					session.getValue().getLocatedContent(), e);
+			}
+		});
 		interpreter.createWith("copy", CopyMigrator.class, CopyMigrator::new);
 		interpreter.createWith("set", SetMigrator.class, SetMigrator::new);
 		return interpreter;

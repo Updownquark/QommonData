@@ -126,6 +126,11 @@
 		</element-def>
 		<element-def name="single-entity-migrator" abstract="true" />
 		
+		<element-def name="custom-single" extends="single-entity-migrator">
+			<?DOC The fully-qualified class name of the class that will do the migration for each entity of the specified type?>
+			<value type="identifier-path" />
+		</element-def>
+		
 		<element-def name="copy" extends="single-entity-migrator">
 			<attribute name="from" type="identifier-path" />
 			<attribute name="to" type="identifier-path" />
