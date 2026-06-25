@@ -19,6 +19,8 @@
 			<attribute name="rename-to" type="identifier" />
 		</add-on>
 		<add-on name="abstract-move-to" abstract="true" />
+		
+		<add-on name="entity-field-initializer" abstract="true" />
 	</add-ons>
 	<elements>
 		<element-def name="schema-history">
@@ -92,7 +94,6 @@
 			<attribute name="sort-by" type="identifier" specify="optional" />
 			<attribute name="owns-target" type="boolean" default="false" />
 		</element-def>
-		<element-def name="entity-field-initializer" />
 		<element-def name="remove-field" extends="entity-field-migration" />
 		<element-def name="rename-field" extends="entity-field-migration" inherits="rename-migration" />
 		

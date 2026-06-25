@@ -544,9 +544,9 @@ public abstract class AbstractGenericEntity implements GenericEntity {
 	protected <T> T createEmptyStructure(EntityField<?> field, FieldType.ParameterizedType<T> type) {
 		if (field.getMapping() == null || field.getMapping().sortByField == null)
 			return type.createEmptyStructure();
-		else if (type instanceof FieldType.CollectionType) {
+		else if (type instanceof FieldType.CollectionType)
 			return (T) ((FieldType.CollectionType<GenericEntity, ?>) type).createEmptyCollection(field.getMapping().entitySort);
-		} else if (type instanceof FieldType.MultiMapType)
+		else if (type instanceof FieldType.MultiMapType)
 			return (T) ((FieldType.MultiMapType<?, GenericEntity, ?>) type).createEmptyMultiMap(field.getMapping().entitySort);
 		else
 			throw new IllegalStateException("Unrecognized mapped field type for sort-by: " + type);
