@@ -17,6 +17,7 @@ import org.qommons.data.types.EntityTypeSet;
 import org.qommons.data.types.EnumType;
 import org.qommons.data.types.EnumValue;
 import org.qommons.data.types.FieldType;
+import org.qommons.data.types.TupleFieldValue;
 import org.qommons.ex.CheckedExceptionWrapper;
 
 public interface GenericEntitySet extends Transactable {
@@ -144,6 +145,27 @@ public interface GenericEntitySet extends Transactable {
 			} else if (srcField.getType() instanceof EntityType) {
 				destValue = (F) copyEntity((GenericEntity) srcValue, destEntity.getEntitySet());
 				destEntity.set(destField, destValue);
+			} else if (srcField.getType() instanceof FieldType.TupleType) {
+				FieldType.TupleType srcTT = (FieldType.TupleType) srcField.getType();
+				if (srcTT.isComplex())
+					throw new IllegalArgumentException("Complex types are not supported here: " + srcField);
+				TupleFieldValue srcTuple = (TupleFieldValue) srcValue;
+				TupleFieldValue destTuple = (TupleFieldValue) destEntity.get(destField);
+				boolean tuplesMatch = true;
+				if (destTuple == null) {
+					tuplesMatch = false;
+					destTuple = new TupleFieldValue(srcTuple.length());
+				}
+				destValue = (F) destTuple;
+				for (int c = 0; tuplesMatch && c < srcTT.length(); c++) {
+					if (!valuesMatch(srcTuple.get(c), destTuple.get(c)))
+						tuplesMatch = false;
+				}
+				if (!tuplesMatch) {
+					GenericEntitySet destEntities = destEntity.getEntitySet();
+					for (int c = 0; c < srcTT.length(); c++)
+						destTuple.set(c, getDestFieldValue(srcTuple.get(c), destEntities, srcField == destField));
+				}
 			} else if (srcField.getType() instanceof FieldType.CollectionType) {
 				FieldType.CollectionType<?, ?> srcCT = (FieldType.CollectionType<?, ?>) srcField.getType();
 				if (srcCT.isComplex())

@@ -11,6 +11,7 @@ import org.qommons.data.types.Blob;
 import org.qommons.data.types.EntityType;
 import org.qommons.data.types.EnumType;
 import org.qommons.data.types.FieldType;
+import org.qommons.data.types.TupleFieldValue;
 import org.qommons.data.values.GenericEntity;
 import org.qommons.io.FileUtils;
 import org.qommons.io.LocatedPositionedContent;
@@ -38,8 +39,8 @@ public interface FieldSetter<F, T> extends BiConsumer<GenericEntity, F>, FieldRe
 		}
 	}
 
-	static <F, T> FieldSetter<F, T> parse(EntityType entity, FieldType<F> fromType, CharSequence from,
-		LocatedPositionedContent to) throws QonfigInterpretationException {
+	static <F, T> FieldSetter<F, T> parse(EntityType entity, FieldType<F> fromType, CharSequence from, LocatedPositionedContent to)
+		throws QonfigInterpretationException {
 		FieldPath<T> toPath = FieldPath.parse(entity, to);
 		FieldType<?> type = toPath.lastField.getType();
 		if (type instanceof FieldType.SimpleType || type instanceof EntityType || type instanceof EnumType) {
@@ -66,6 +67,27 @@ public interface FieldSetter<F, T> extends BiConsumer<GenericEntity, F>, FieldRe
 					}
 				}
 			};
+		} else if (type instanceof FieldType.TupleType) {
+			FieldType.TupleType tupleType = (FieldType.TupleType) type;
+			if (tupleType.isComplex())
+				throw new QonfigInterpretationException("Complex types are not supported here: " + tupleType, to);
+			if (fromType instanceof FieldType.TupleType) {
+				for (int c = 0; c < tupleType.length(); c++) {
+					if (!tupleType.getComponent(c).isAssignableFrom(((FieldType.TupleType) fromType).getComponent(c)))
+						throw new QonfigInterpretationException("Type " + fromType + " of " + entity + "." + from
+							+ " cannot be copied to type " + type + " of " + entity + "." + to, to);
+				}
+				return new Abstract<F, T>(toPath) {
+					@Override
+					public void accept(GenericEntity entity2, F fromValue) {
+						GenericEntity target = getTargetEntity(entity2);
+						target.set(getTargetField(), fromValue == null ? null : ((TupleFieldValue) fromValue).copy());
+					}
+				};
+			} else
+				throw new QonfigInterpretationException(
+					"Type " + fromType + " of " + entity + "." + from + " cannot be copied to type " + type + " of " + entity + "." + to,
+					to);
 		} else if (type instanceof FieldType.CollectionType) {
 			FieldType.CollectionType<?, ?> collType = (FieldType.CollectionType<?, ?>) type;
 			if (collType.isComplex())

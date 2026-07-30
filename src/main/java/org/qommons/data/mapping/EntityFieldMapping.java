@@ -71,7 +71,7 @@ public class EntityFieldMapping<G, R> implements Named {
 	}
 
 	private static <G, R> FieldValueMapper<G, R> createMapper(FieldType<G> genericType, Type realType) {
-		if (genericType instanceof FieldType.SimpleType || genericType == FieldType.BLOB)
+		if (genericType instanceof FieldType.SimpleType || genericType == FieldType.BLOB || genericType instanceof FieldType.TupleType)
 			return (FieldValueMapper<G, R>) SimpleFieldMapper.INSTANCE;
 		else if (genericType instanceof EnumType)
 			return (FieldValueMapper<G, R>) new EnumFieldMapper<>((Class<?>) realType);

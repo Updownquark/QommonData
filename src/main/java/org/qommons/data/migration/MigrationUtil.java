@@ -46,6 +46,7 @@ import org.qommons.data.types.EnumType;
 import org.qommons.data.types.EnumValue;
 import org.qommons.data.types.FieldType;
 import org.qommons.data.types.FieldType.SimpleType;
+import org.qommons.data.types.TupleFieldValue;
 import org.qommons.data.types.modifiable.ModifiableEntityType;
 import org.qommons.data.types.modifiable.ModifiableEntityTypeSet;
 import org.qommons.data.values.DataSetModificationException;
@@ -428,7 +429,7 @@ public class MigrationUtil {
 		if (paramIdx < 0)
 			paramIdx = text.indexOf('{');
 		if (paramIdx >= 0) {
-			FieldType<?>[] params = new FieldType[2];
+			List<FieldType<?>> params = new ArrayList<>();
 			int closeChar = text.charAt(paramIdx) + 2; // Weird, but this happens to work
 			if (text.charAt(text.length() - 1) != closeChar)
 				throw new QonfigInterpretationException("Terminating '" + closeChar + "' expected", text);
@@ -436,16 +437,15 @@ public class MigrationUtil {
 			LocatedPositionedContent paramsText = text.subSequence(paramIdx + 1, text.length() - 1);
 			int paramCount = PositionedContent.split(paramsText, ',', paramText -> {
 				FieldType<?> param = parseFieldType(paramText, types, creatingEntity, uncreated);
-				if (params[0] == null)
-					params[0] = param;
-				else if (params[1] == null)
-					params[1] = param;
-				else
-					throw new QonfigInterpretationException("Too many type parameters--only 2 are possible", paramsText);
+				params.add(param);
 			});
 			int expectedParamCount;
-			boolean distinct = false, sorted = false, multiValue = false;
+			boolean tuple = false, distinct = false, sorted = false, multiValue = false;
 			switch (rawType.toString()) {
+			case "":
+				tuple = true;
+				expectedParamCount = paramCount; // Can tolerate any number of parameter types
+				break;
 			case "List":
 				expectedParamCount = 1;
 				break;
@@ -482,12 +482,14 @@ public class MigrationUtil {
 			if (paramCount != expectedParamCount)
 				throw new QonfigInterpretationException(
 					"Expected " + expectedParamCount + " parameters for raw type " + rawType + ", but encountered " + paramCount, text);
+			else if (tuple)
+				return new FieldType.TupleType(params.toArray(new FieldType[params.size()]));
 			else if (expectedParamCount == 1)
-				return new FieldType.CollectionType<>(params[0], sorted, distinct);
+				return new FieldType.CollectionType<>(params.get(0), sorted, distinct);
 			else if (multiValue)
-				return new FieldType.MultiMapType<>(params[0], params[1], sorted);
+				return new FieldType.MultiMapType<>(params.get(0), params.get(1), sorted);
 			else
-				return new FieldType.MapType<>(params[0], params[1], sorted);
+				return new FieldType.MapType<>(params.get(0), params.get(1), sorted);
 		}
 		String textStr = text.toString();
 		switch (textStr) {
@@ -570,6 +572,8 @@ public class MigrationUtil {
 				}
 			}
 			return (F) blob;
+		} else if (fieldType instanceof FieldType.TupleType) {
+			return (F) parseTuple(text, (FieldType.TupleType) fieldType, entities, source);
 		} else if (fieldType instanceof FieldType.CollectionType) {
 			return (F) parseCollection(text, (FieldType.CollectionType<?, ?>) fieldType, entities, source);
 		} else if (fieldType instanceof FieldType.MapType) {
@@ -613,6 +617,36 @@ public class MigrationUtil {
 			throw new QonfigInterpretationException("No such " + type.getName() + " with ID " + text.subSequence(0, pos), source.apply(0),
 				pos);
 		return found;
+	}
+
+	private static TupleFieldValue parseTuple(CharSequence text, FieldType.TupleType fieldType, GenericEntitySet entities,
+		IntFunction<LocatedFilePosition> source) throws QonfigInterpretationException {
+		if (text.length() == 0) {
+			return null; // Empty text means a null tuple
+		}
+		if (text.charAt(0) != '{' || text.charAt(text.length() - 1) != '}')
+			throw new QonfigInterpretationException("Tuple values must be enclosed by '{' '}'", source.apply(0), 0);
+		TupleFieldValue tuple = fieldType.createEmptyStructure();
+		int index = 0;
+		int start = 1, line = 0, col = 0;
+		while (start < text.length() - 1) {
+			if (index == fieldType.length())
+				throw new QonfigInterpretationException("This tuple only has " + fieldType.length() + " components", source.apply(start),
+					0);
+			CsvParser.ParsedCsvValue csvValue;
+			try {
+				csvValue = CsvParser.fromCsv(text, start, line, col, ',');
+			} catch (TextParseException e) {
+				throw new QonfigInterpretationException(e.getMessage(), source.apply(e.getErrorOffset()), 0, e);
+			}
+			int fPos = start;
+			tuple.set(index, parseFieldValue(csvValue.parsed, fieldType.getComponent(index), entities, p -> source.apply(fPos + p)));
+			start = csvValue.sourceEnd + 1; // Skip the delimiter
+			line = csvValue.endLine;
+			col = csvValue.endColumn + 1;
+			index++;
+		}
+		return tuple;
 	}
 
 	private static <E, C extends BetterCollection<E>> C parseCollection(CharSequence text, FieldType.CollectionType<E, C> fieldType,
@@ -720,6 +754,8 @@ public class MigrationUtil {
 			} catch (IOException e) {
 				throw new IllegalStateException("Could not print BLOB data", e);
 			}
+		} else if (type instanceof FieldType.TupleType) {
+			printTuple(str, (FieldType.TupleType) type, (TupleFieldValue) value);
 		} else if (type instanceof FieldType.CollectionType) {
 			printCollection(str, (FieldType.CollectionType<?, ?>) type, (Collection<?>) value);
 		} else if (type instanceof FieldType.MapType) {
@@ -744,6 +780,21 @@ public class MigrationUtil {
 			CsvParser.escapeCsv(str, preLen, str.length(), ',');
 		}
 		return str;
+	}
+
+	public static void printTuple(StringBuilder str, FieldType.TupleType type, TupleFieldValue value) {
+		if (value == null) {
+			return; // Null tuple persisted as empty text
+		}
+		str.append('{'); // This is needed to distinguish a non-null tuple
+		for (int c = 0; c < type.length(); c++) {
+			if (c != 0)
+				str.append(',');
+			int preLen = str.length();
+			printFieldValue(str, type.getComponent(c), value.get(c));
+			CsvParser.escapeCsv(str, preLen, str.length(), ',');
+		}
+		str.append('}');
 	}
 
 	public static void printCollection(StringBuilder str, FieldType.CollectionType<?, ?> type, Collection<?> value) {

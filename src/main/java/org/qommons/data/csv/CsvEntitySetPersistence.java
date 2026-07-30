@@ -28,6 +28,7 @@ import org.qommons.data.types.EntityField;
 import org.qommons.data.types.EntityType;
 import org.qommons.data.types.EntityTypeSet;
 import org.qommons.data.types.FieldType;
+import org.qommons.data.types.TupleFieldValue;
 import org.qommons.data.values.EntitySetPersistence;
 import org.qommons.data.values.GenericEntity;
 import org.qommons.data.values.GenericEntitySet;
@@ -415,7 +416,9 @@ public class CsvEntitySetPersistence implements EntitySetPersistence {
 	private static <F> void populateField(GenericEntity entity, EntityField<F> field, String text, GenericEntitySet entitySet,
 		IntFunction<LocatedFilePosition> source) throws IOException, TextParseException {
 		F value = MigrationUtil.parseFieldValue(text, field.getType(), entitySet, source);
-		if (field.getType() instanceof FieldType.CollectionType) {
+		if (field.getType() instanceof FieldType.TupleType) {
+			entity.set(field, value == null ? null : ((TupleFieldValue) value).copy());
+		} else if (field.getType() instanceof FieldType.CollectionType) {
 			((Collection<Object>) entity.get(field)).addAll((Collection<?>) value);
 		} else if (field.getType() instanceof FieldType.MapType) {
 			((Map<Object, Object>) entity.get(field)).putAll((Map<?, ?>) value);

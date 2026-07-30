@@ -51,6 +51,7 @@ import org.qommons.data.types.EntityType;
 import org.qommons.data.types.EntityTypeSet;
 import org.qommons.data.types.EnumType;
 import org.qommons.data.types.FieldType;
+import org.qommons.data.types.TupleFieldValue;
 import org.qommons.data.types.modifiable.ModifiableEntityTypeSet;
 import org.qommons.data.values.DataSetModificationException;
 import org.qommons.data.values.EntitySetPersistence;
@@ -862,6 +863,8 @@ public class VersionedDataScheme {
 					value = theTypes.getEnumTypes().get(((EnumType) fieldType).getName()).getCodeOrderedEnum(((Enum<?>) value).ordinal());
 				else if (fieldType instanceof EntityType)
 					value = getOrCreateEntity(value, theTypes.getEntityTypes().get(((EntityType) fieldType).getName()), inId);
+				else if (fieldType instanceof FieldType.TupleType)
+					value = generifyTuple((TupleFieldValue) value, (FieldType.TupleType) fieldType);
 				else if (fieldType instanceof FieldType.CollectionType)
 					value = generifyCollection((Collection<?>) value, (FieldType.CollectionType<?, ?>) fieldType);
 				else if (fieldType instanceof FieldType.MapType)
@@ -885,6 +888,16 @@ public class VersionedDataScheme {
 				return false;
 			} else
 				return false;
+		}
+
+		private Object generifyTuple(TupleFieldValue value, FieldType.TupleType fieldType)
+			throws IllegalAccessException, IllegalArgumentException, InvocationTargetException, IOException {
+			if (value == null)
+				return value;
+			TupleFieldValue copy = new TupleFieldValue(value.length());
+			for (int c = 0; c < fieldType.length(); c++)
+				copy.set(c, generifyField(value.get(c), fieldType.getComponent(c), false));
+			return copy;
 		}
 
 		private <E> Object generifyCollection(Collection<?> value, FieldType.CollectionType<E, ?> fieldType)

@@ -18,6 +18,7 @@ import java.util.Objects;
 import java.util.function.Function;
 import java.util.function.IntFunction;
 
+import org.qommons.QommonsUtils;
 import org.qommons.StringUtils;
 import org.qommons.TimeUtils;
 import org.qommons.collect.BetterCollection;
@@ -785,6 +786,137 @@ public interface FieldType<F> extends Comparator<F> {
 				str.append("Sorted");
 			str.append("MultiMap");
 			return str.append('<').append(keyType).append(", ").append(valueType).append('>').toString();
+		}
+	}
+
+	/**
+	 * A simple type that is composed of a constant number of "fields". This type is nice for persisting fields with that are small and
+	 * generic, so not worth storing in their own table.
+	 */
+	public static class TupleType implements ParameterizedType<TupleFieldValue> {
+		private final List<FieldType<?>> theComponents;
+
+		public TupleType(FieldType<?>[] components) {
+			theComponents = QommonsUtils.unmodifiableCopy(components);
+		}
+
+		public int length() {
+			return theComponents.size();
+		}
+
+		public FieldType<?> getComponent(int index) {
+			return theComponents.get(index);
+		}
+
+		@Override
+		public boolean isInstance(Object value) {
+			return value instanceof TupleFieldValue && ((TupleFieldValue) value).length() == length();
+		}
+
+		@Override
+		public boolean isAssignableFrom(FieldType<?> other) {
+			if (other == this)
+				return true;
+			else if (!(other instanceof TupleType))
+				return false;
+			TupleType tft = (TupleType) other;
+			if (length() != tft.length())
+				return false;
+			for (int c = 0; c < length(); c++) {
+				if (!getComponent(c).isAssignableFrom(tft.getComponent(c)))
+					return false;
+			}
+			return true;
+		}
+
+		@Override
+		public TupleFieldValue convert(Object value, FieldType<?> valueType) {
+			if (value == null)
+				return null;
+			TupleFieldValue copy = createEmptyStructure();
+			for (int c = 0; c < length(); c++) {
+				copy.set(c, getComponent(c).convert(((TupleFieldValue) value).get(c), ((TupleType) valueType).getComponent(c)));
+			}
+			return copy;
+		}
+
+		@Override
+		public int compare(TupleFieldValue o1, TupleFieldValue o2) {
+			for (int c = 0; c < length(); c++) {
+				int comp = ((FieldType<Object>) getComponent(c)).compare(o1.get(c), o2.get(c));
+				if (comp != 0)
+					return comp;
+			}
+			return 0;
+		}
+
+		@Override
+		public List<FieldType<?>> getTypeParameters() {
+			return theComponents;
+		}
+
+		@Override
+		public boolean rawTypesEqual(ParameterizedType<?> other) {
+			return other instanceof TupleType;
+		}
+
+		@Override
+		public <X extends Throwable> ParameterizedType<TupleFieldValue> map(ExFunction<? super FieldType<?>, ? extends FieldType<?>, X> map)
+			throws X {
+			FieldType<?>[] componentCopy = null;
+			for (int c = 0; c < length(); c++) {
+				FieldType<?> comp = getComponent(c);
+				if (comp instanceof ParameterizedType) {
+					ParameterizedType<?> mapped = ((ParameterizedType<?>) comp).map(map);
+					if (mapped != comp) {
+						if (componentCopy == null) {
+							componentCopy = new FieldType[length()];
+							for (int c2 = 0; c2 < c; c2++)
+								componentCopy[c2] = getComponent(c2);
+						}
+						componentCopy[c] = mapped;
+					} else if (componentCopy != null)
+						componentCopy[c] = mapped;
+				} else if (componentCopy != null)
+					componentCopy[c] = comp;
+			}
+			if (componentCopy != null)
+				return new TupleType(componentCopy);
+			else
+				return this;
+		}
+
+		@Override
+		public TupleFieldValue createEmptyStructure() {
+			return new TupleFieldValue(length());
+		}
+
+		@Override
+		public int hashCode() {
+			return theComponents.size();
+		}
+
+		@Override
+		public boolean equals(Object obj) {
+			if (this == obj)
+				return true;
+			else if (!(obj instanceof TupleType))
+				return false;
+			return theComponents.equals(((TupleType) obj).theComponents);
+		}
+
+		@Override
+		public String toString() {
+			StringBuilder str = new StringBuilder().append('{');
+			boolean first = true;
+			for (FieldType<?> component : theComponents) {
+				if (first)
+					first = false;
+				else
+					str.append(", ");
+				str.append(component);
+			}
+			return str.append('}').toString();
 		}
 	}
 
